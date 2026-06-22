@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Iterable
 
 import torch
@@ -120,7 +121,11 @@ class ChronosTemporalAdapter:
     device: str = "cuda"
 
     def __post_init__(self) -> None:
-        self.pipeline = Chronos2Pipeline.from_pretrained(self.model_id)
+        cache_dir = os.environ.get("HF_HOME") or os.path.join(
+            os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+            "huggingface",
+        )
+        self.pipeline = Chronos2Pipeline.from_pretrained(self.model_id, cache_dir=cache_dir)
         self.is_chronos_model = True
         self.is_generative_model = False
 

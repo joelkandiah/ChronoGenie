@@ -252,3 +252,7 @@ def testing_sliding_window(
         np.save(os.path.join(output_folder, f"spatial_scores_{metric_name}.npy"), metric_array)
 
     return predictions
+
+
+def get_sliding_window_predictions(*args, **kwargs):
+    return testing_sliding_window(*args, **kwargs)

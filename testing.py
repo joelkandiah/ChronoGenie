@@ -27,13 +27,14 @@ def test(temporal_model, local_profile_encoder, interaction_encoder,
     
     # Set models to evaluation mode
     temporal_model.eval()
-    interaction_encoder.eval()
+    if interaction_encoder is not None:
+        interaction_encoder.eval()
 
     if local_profile_encoder is not None:
         local_profile_encoder.eval()
     
     # Number of nodes (MSOAs)
-    num_msoas = graph_data[0].num_nodes
+    num_msoas = graph_data[0].num_nodes if graph_data[0] is not None else dataset_directory.num_geographies
 
     base_output_folder = output_folder
 

@@ -1,0 +1,41 @@
+experiment:
+  name: "CHRONOS2_DEFAULT"
+  description: "Chronos-2 direct autoregressive forecasting with static context"
+
+data_source: "configs/data/1K_june.yaml"
+
+output:
+  base_dir: "RESULTS/RESULTS_CHRONOS/{name}_{timestamp}"
+
+columns:
+  prediction: ["daily_hospitalised", "deaths", "Rt2"]
+  context: ["daily_hospitalised", "deaths"]
+  continuous_targets: ["Rt2"]
+
+execution:
+  mode: "both"
+  device: "cuda"
+
+context:
+  size: 30
+  min_timestep: 0
+
+model:
+  chronos_model_id: "amazon/chronos-2"
+  chronos:
+    mode: "lora"
+    learning_rate: 1.0e-5
+    steps: 300
+    batch_size: 32
+    count_noise_low: 0.0
+    count_noise_high: 1.0
+
+testing:
+  autoregressive_windows: [180]
+  num_samples: 200
+  num_steps: 50
+  window_batch_size: 16
+
+transfer:
+  scalers_from: null
+  checkpoints_from: null

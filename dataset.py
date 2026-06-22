@@ -1,11 +1,80 @@
 import numpy as np
 import pandas as pd
 import os
+import ast
 import torch
 from torch.utils.data import Dataset
 import xarray as xr
-from graph_construction import load_static_features
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
+
+def load_static_features(feature_data, geography_metadata, save_path=None):
+    """
+    Load static geography features and align them to dataset gid ordering.
+    """
+    static_df = pd.read_csv(feature_data).copy()
+
+    if "msoa" not in static_df.columns:
+        raise ValueError("Static feature CSV must include a 'msoa' column")
+
+    msoa_map = pd.Series(geography_metadata.index, index=geography_metadata["MSOA"])
+    static_df["gid"] = static_df["msoa"].map(msoa_map).astype("Int64")
+
+    unmapped = static_df["gid"].isna()
+    if unmapped.any():
+        print(f"[WARNING] Dropping {unmapped.sum()} static rows with MSOAs not found in geo_metadata.")
+    static_df = static_df[~unmapped].copy()
+
+    expected_gids = set(geography_metadata.index.tolist())
+    found_gids = set(static_df["gid"].astype(int).tolist())
+    missing_gids = sorted(expected_gids - found_gids)
+    if len(missing_gids) > 0:
+        raise ValueError(f"Static features are missing {len(missing_gids)} gids from geo_metadata.")
+
+    if "lat_long" in static_df.columns:
+        parsed = static_df["lat_long"].apply(
+            lambda v: ast.literal_eval(v) if isinstance(v, str) else v
+        )
+        static_df["latitude"] = parsed.apply(lambda x: x[0])
+        static_df["longitude"] = parsed.apply(lambda x: x[1])
+
+    preferred_columns = [
+        "latitude",
+        "longitude",
+        "iomd_centile",
+        "num_students",
+        "num_residents_in_msoa",
+        "population_density",
+        "num_households_of_size_1",
+        "num_households_of_size_2",
+        "num_households_of_size_3",
+        "num_households_of_size_4",
+        "num_households_of_size_5",
+        "num_households_of_size_6",
+        "num_households_of_size_7",
+        "num_households_of_size_8",
+        "num_carehome_residents",
+    ]
+
+    selected = [c for c in preferred_columns if c in static_df.columns]
+    if len(selected) == 0:
+        excluded = {"msoa", "region", "lat_long", "gid"}
+        selected = [c for c in static_df.columns if c not in excluded]
+
+    static_df = static_df[["gid"] + selected].copy()
+    static_df["gid"] = static_df["gid"].astype(int)
+    static_df = static_df.sort_values("gid")
+
+    if save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
+        static_df.to_csv(os.path.join(save_path, "processed_static_features.csv"), index=False)
+
+    values = static_df[selected].to_numpy(dtype=np.float32)
+    return xr.DataArray(
+        values,
+        coords={"gid": static_df["gid"].to_numpy(), "static_features": selected},
+        dims=["gid", "static_features"],
+    )
 
 
 class DatesetDirectory():

@@ -1,420 +1,254 @@
+#!/usr/bin/env python3
+"""
+Chronos-only sliding-window autoregressive testing.
+"""
+
 import os
-import random
-import time
+from collections import defaultdict
 
 import numpy as np
 import torch
-import pyarrow as pa
-from pyarrow import feather
 
-from distribution_construction import sample_mixed
-from train_test_helpers import get_batched_graph, cache_graph_topology
-from proper_scoring import interval_score, crps, energy_score, variogram
-from proper_scoring_torch import (
-    interval_score_torch, crps_torch, energy_score_torch, variogram_torch
-)
-from flow_matching_model import FlowMatchingModel
-from diffusion_model import DiffusionModel
-from normalising_flow_model import NormalisingFlowModel
-from variational_flow_matching_model import VFMFlowMatchingModel
-from maf_model import MAFFlowModel
-from cnf_model import CNFFlowModel
+from chronos_adapter import pack_chronos_input, sample_from_quantiles, unpack_prediction_blocks
+from proper_scoring_torch import compute_scores_torch
 
-torch.manual_seed(26)
-random.seed(26) 
-np.random.seed(26)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(26)
 
-def get_sliding_window_predictions(
-        dataset_directory, loader, scalers, num_msoas, device,
-        temporal_model, spatial_encoder, temporal_encoder,
-        graph_data, max_timestep, output_folder, 
-        truth_unscaled, num_samples = 100, 
-        spatial_ablation=False, include_latest_context = False,
-        spatial_encoder_type = "mlp", num_steps = 50,
-        window_batch_size = 16):
+def _save_chronos_window_outputs(
+    output_folder,
+    dataset_directory,
+    prediction_indices,
+    current_test_window,
+    global_predictions,
+    global_ground_truth,
+    actual_dates,
+    from_index,
+):
+    os.makedirs(output_folder, exist_ok=True)
 
-    temp_graph_data, spatial_graph_data = graph_data[0], graph_data[1]
+    for local_horizon in range(global_predictions.shape[2]):
+        absolute_horizon = current_test_window + local_horizon
 
-    # Creating folder for storing the embeddings
-    save_path_embeddings = f"{output_folder}/embeddings"
-    os.makedirs(save_path_embeddings, exist_ok=True)
+        all_data = []
+        for global_sim_idx, sim_id in enumerate(dataset_directory.test_sims):
+            for col_pos, pred_idx in enumerate(prediction_indices):
+                col_name = dataset_directory.columns_with_data[pred_idx]
+                for geo_idx in range(dataset_directory.num_geographies):
+                    all_data.append(
+                        {
+                            "date": actual_dates[global_sim_idx],
+                            "sim": sim_id,
+                            "horizon": absolute_horizon,
+                            "column": col_name,
+                            "msoa": dataset_directory.geographies[geo_idx],
+                            "ground_truth": float(
+                                global_ground_truth[global_sim_idx, col_pos, local_horizon, geo_idx]
+                            ),
+                            "prediction": float(
+                                global_predictions[global_sim_idx, col_pos, local_horizon, geo_idx]
+                            ),
+                        }
+                    )
 
-    # Ensure truth_unscaled is a Torch tensor on the GPU for faster scoring
-    if isinstance(truth_unscaled, np.ndarray):
-        truth_unscaled_gpu = torch.from_numpy(truth_unscaled).float().to(device)
-    else:
-        truth_unscaled_gpu = truth_unscaled.to(device)
+        output_path = os.path.join(
+            output_folder,
+            f"predictions_timestep_{from_index + absolute_horizon}.csv",
+        )
 
-    # Disabling gradient calculations during inference. 
-    # We don't call backward here so it will reduce memory consumption
-    with torch.no_grad(): 
-        for testing_trajectory in loader:
-            # location_specific_info: [B, M, F_static]
-            # timesteps: [B]
-            location_specific_info, timesteps, current_dow_batch, *ctx_and_targets = testing_trajectory
+        import pandas as pd
 
-            prediction_names = list(dataset_directory.columns_for_prediction) 
-            context_names = list(dataset_directory.columns_for_context) 
-            num_prediction  = len(prediction_names)
-            num_context   = len(context_names)
+        pd.DataFrame(all_data).to_csv(output_path, index=False)
 
-            # context_list: list of [B, M, L]
-            context_list = [c.to(device) for c in ctx_and_targets[:num_context]]
-            location_specific_info = location_specific_info.to(device)
-            timesteps = timesteps.to(device)
-            current_dow_batch = current_dow_batch.to(device)
 
-            num_autoreg_windows = context_list[0].size(0)
-            print(f"num_autoreg_windows {num_autoreg_windows}")
+def create_test_chunks(test_sims, chunk_size):
+    test_sims_sorted = sorted(test_sims)
+    chunks = []
+    for i in range(0, len(test_sims_sorted), chunk_size):
+        chunks.append(test_sims_sorted[i : i + chunk_size])
+    return chunks
 
-            # Precompute context-to-prediction index mapping once.
-            # Avoids repeated list.index() lookups inside the inner loop.
-            ctx_to_pred_idx = {}
-            for c_idx, c_name in enumerate(context_names):
-                if c_name in prediction_names:
-                    ctx_to_pred_idx[c_idx] = prediction_names.index(c_name)
 
-            # Cache model type check once — avoids isinstance() dispatch every step.
-            is_generative_model = isinstance(temporal_model, (
-                FlowMatchingModel, DiffusionModel, NormalisingFlowModel, VFMFlowMatchingModel,
-                MAFFlowModel, CNFFlowModel
-            ))
+def testing_sliding_window(
+    temporal_model,
+    interaction_encoder,
+    graph_data,
+    dataset_directory,
+    context_size,
+    autoregressive_window_size,
+    predictions,
+    ground_truths,
+    num_samples,
+    from_index,
+    include_latest_context,
+    num_steps,
+    windows,
+    output_folder,
+    spatial_ablation,
+    spatial_encoder_type,
+    window_batch_size,
+):
+    del interaction_encoder, graph_data, include_latest_context, spatial_ablation, spatial_encoder_type, num_steps, windows
 
-            # These arrays are the same for every window — build once.
-            burden_map = np.array(prediction_names)
-            msoa_name_map = dataset_directory.df_geo_metadata["MSOA"].to_numpy()
+    spatial_scores = defaultdict(list)
 
-            window_times_seconds = []
+    prediction_indices = [
+        i
+        for i, col in enumerate(dataset_directory.columns_with_data)
+        if col in dataset_directory.columns_for_prediction
+    ]
+    context_indices = [
+        i
+        for i, col in enumerate(dataset_directory.columns_with_data)
+        if col in dataset_directory.columns_for_context
+    ]
 
-            # Iterate over batches of sliding windows
-            for batch_start in range(0, num_autoreg_windows, window_batch_size):
-                batch_end = min(batch_start + window_batch_size, num_autoreg_windows)
-                W = batch_end - batch_start
-                window_indices = torch.arange(batch_start, batch_end, device=device)
-                
-                window_start_time = time.time()
-                print(f"Processing windows {batch_start+1}-{batch_end} of {num_autoreg_windows}")
-                
-                starting_timesteps = timesteps[window_indices] # [W]
-                starting_dows = current_dow_batch[window_indices] # [W]
-                
-                # Vectorised max-horizon calculation — avoids a Python loop
-                # with per-element .item() GPU syncs.
-                horizons = torch.clamp(starting_timesteps + 60, max=max_timestep) - starting_timesteps
-                batch_max_horizon = horizons.max().item()  # single sync point
-                
-                # current_contexts_batch: list of [W, M, L]
-                # contexts_multi_sample: list of [W, S, M, L]
-                # .contiguous() instead of .clone(): both make the expanded view
-                # writable, but .contiguous() avoids a redundant deep copy when
-                # the memory layout is already contiguous after expand().
-                contexts_multi_sample = [
-                    c[window_indices].unsqueeze(1).expand(-1, num_samples, -1, -1).contiguous()
-                    for c in context_list
+    if len(prediction_indices) == 0:
+        raise ValueError("No prediction columns found")
+    if len(context_indices) == 0:
+        raise ValueError("No context columns found")
+
+    pred_type_by_name = dict(
+        zip(dataset_directory.columns_for_prediction, dataset_directory.prediction_distribution_types)
+    )
+    count_channel_positions = [
+        i
+        for i, pred_idx in enumerate(prediction_indices)
+        if pred_type_by_name.get(dataset_directory.columns_with_data[pred_idx], "lognormal").lower() != "lognormal"
+    ]
+
+    test_chunks = create_test_chunks(dataset_directory.test_sims, max(1, window_batch_size))
+
+    all_dates = sorted(dataset_directory.dataframe["date"].unique())
+
+    for current_test_window in range(autoregressive_window_size):
+        print(f"Testing timestep {from_index + current_test_window}")
+
+        chunk_predictions = []
+        chunk_ground_truths = []
+        chunk_sim_ids = []
+
+        for test_chunk in test_chunks:
+            batch_predictions = []
+            batch_ground_truths = []
+
+            for sim_id in test_chunk:
+                sim_idx = dataset_directory.sim_id_to_idx[sim_id]
+
+                context_tensors = []
+                for idx in context_indices:
+                    context_start = from_index + current_test_window
+                    context_end = context_start + context_size
+                    context_tensors.append(
+                        predictions[idx, sim_idx, context_start:context_end]
+                    )
+
+                packed_context = pack_chronos_input(
+                    context_tensors,
+                    dataset_directory.static_features_tensor,
+                )
+
+                quantile_levels = [0.1, 0.5, 0.9]
+                quantiles_list, _ = temporal_model.predict_quantiles(
+                    inputs=[packed_context],
+                    prediction_length=1,
+                    quantile_levels=quantile_levels,
+                )
+
+                quantiles = quantiles_list[0]
+                prediction_blocks = unpack_prediction_blocks(
+                    quantile_tensor=quantiles,
+                    context_names=dataset_directory.columns_for_context,
+                    prediction_names=dataset_directory.columns_for_prediction,
+                    num_nodes=dataset_directory.num_geographies,
+                )
+
+                sampled = sample_from_quantiles(
+                    quantile_values=prediction_blocks,
+                    quantile_levels=torch.tensor(quantile_levels, device=prediction_blocks.device),
+                    num_samples=num_samples,
+                )
+                sampled = sampled[:, 0].permute(2, 0, 1)
+
+                if len(count_channel_positions) > 0:
+                    sampled[count_channel_positions] = torch.floor(torch.clamp(sampled[count_channel_positions], min=0.0))
+
+                means = sampled.mean(dim=1)
+                pred_time_idx = from_index + context_size + current_test_window
+                predictions[prediction_indices, sim_idx, pred_time_idx] = means
+
+                gt = ground_truths[
+                    prediction_indices,
+                    sim_idx,
+                    pred_time_idx,
                 ]
 
-                # Pre-allocate tensor for all samples in this batch: [W, S, T, M, V]
-                # T is batch_max_horizon
-                batch_samples_tensor = torch.zeros(
-                    (W, num_samples, batch_max_horizon, num_msoas, num_prediction),
-                    device=device, dtype=torch.float32
-                )
-                
-                # Pre-allocate for distributions if applicable: [W, S, T, M, V]
-                mu_preds_tensor = torch.zeros_like(batch_samples_tensor)
-                var_preds_tensor = torch.zeros_like(batch_samples_tensor)
+                batch_predictions.append(sampled)
+                batch_ground_truths.append(gt)
 
-                # Precompute spatial embeddings for the whole batch: [W, M, d_s]
-                h_spatial_batch = None
-                if spatial_encoder is not None:
-                    lsi_batch = location_specific_info[window_indices] # [W, M, F_static]
-                    use_gnn_spatial = (spatial_encoder_type or "gnn").lower() == "gnn"
-                    if use_gnn_spatial:
-                        # Batch the graphs for all windows in the batch
-                        spatial_encoder_batch = get_batched_graph(lsi_batch, spatial_graph_data, device)
-                        out = spatial_encoder(spatial_encoder_batch, return_attention=False)
-                        h_spatial_batch = out[0] if isinstance(out, (tuple, list)) else out.squeeze(0)
-                        h_spatial_batch = h_spatial_batch.view(W, num_msoas, -1) # [W, M, d_s]
-                    else:
-                        h_spatial_batch = spatial_encoder(lsi_batch) # [W, M, d_s]
+            if len(batch_predictions) == 0:
+                continue
 
-                # Pre-warm topology caches before the autoregressive loop so
-                # the first step does not pay the one-time construction cost.
-                # Temporal graph: batched for W * num_samples copies.
-                cache_graph_topology(temp_graph_data, W * num_samples, device)
+            pred_tensor = torch.stack(batch_predictions, dim=0)
+            gt_tensor = torch.stack(batch_ground_truths, dim=0)
 
-                # Precompute shape constants used repeatedly inside the loop.
-                WS  = W * num_samples                   # num graphs in temporal batch
-                WSM = WS * num_msoas                     # total nodes across all graphs
-                WSNV = (W, num_samples, num_msoas, num_prediction)  # reshape target for model output
+            if len(count_channel_positions) > 0:
+                gt_tensor[:, count_channel_positions] = torch.floor(torch.clamp(gt_tensor[:, count_channel_positions], min=0.0))
 
-                # lsi_expanded is constant across steps — hoist outside the loop.
-                if spatial_encoder is None and not spatial_ablation:
-                    lsi_expanded = location_specific_info[window_indices].unsqueeze(1).expand(-1, num_samples, -1, -1)
+            scores = compute_scores_torch(
+                forecast_sample=pred_tensor,
+                y=gt_tensor,
+                alpha=0.05,
+                score_type="all",
+                weighted=False,
+            )
 
-                # h_spatial_expanded is also constant across steps — hoist outside.
-                if spatial_encoder is not None:
-                    h_spatial_expanded = h_spatial_batch.unsqueeze(1).expand(-1, num_samples, -1, -1)
-                
-                # Autoregressive loop vectorized over W windows and S samples
-                for step in range(batch_max_horizon):
-                    # Combine context: [W, S, M, num_ctx * L]
-                    current_context_combined = torch.cat(contexts_multi_sample, dim=3)
-                    
-                    # Current absolute timesteps for each window: [W]
-                    current_timesteps = starting_timesteps + step
-                    
-                    if spatial_encoder is not None:
-                        # h_spatial_expanded already computed outside the loop.
-                        
-                        # temporal_encoder_batch: needs [WS, M, F]
-                        ctx_flat = current_context_combined.view(WS, num_msoas, -1)
-                        temporal_encoder_batch = get_batched_graph(ctx_flat, temp_graph_data, device)
-                        h_temporal_flat = temporal_encoder(temporal_encoder_batch, return_attention=False)
-                        h_temporal = h_temporal_flat.view(W, num_samples, num_msoas, -1) # [W, S, M, d_t]
-                    else:
-                        if spatial_ablation:
-                            combined_node_features = current_context_combined.view(WS, num_msoas, -1)
-                        else:
-                            combined_node_features = torch.cat([lsi_expanded, current_context_combined], dim=3)
-                            combined_node_features = combined_node_features.view(WS, num_msoas, -1)
+            spatial_scores["interval_score"].append(scores[0].detach().cpu().numpy())
+            spatial_scores["crps"].append(scores[1].detach().cpu().numpy())
+            spatial_scores["energy_score"].append(scores[2].detach().cpu().numpy())
+            spatial_scores["variogram_score"].append(scores[3].detach().cpu().numpy())
 
-                        combined_batch = get_batched_graph(combined_node_features, temp_graph_data, device)
-                        h_combined_flat = temporal_encoder(combined_batch, return_attention=False)
-                        h_combined = h_combined_flat.view(W, num_samples, num_msoas, -1)
+            chunk_predictions.append(pred_tensor.mean(dim=2).detach().cpu().numpy())
+            chunk_ground_truths.append(gt_tensor.detach().cpu().numpy())
+            chunk_sim_ids.extend(test_chunk)
 
-                    # Day of week vectorized: [W, 1, 1] expand to [W, S, M, 7]
-                    dow_indices = (starting_dows + step) % 7
-                    dow_oh = torch.nn.functional.one_hot(dow_indices, num_classes=7).float()
-                    day_of_week = dow_oh.view(W, 1, 1, 7).expand(-1, num_samples, num_msoas, -1)
+        if len(chunk_predictions) == 0:
+            continue
 
-                    # Create feature list for model input
-                    feature_list = []
-                    if include_latest_context:
-                        # latest_vals: [W, S, M, num_ctx]
-                        latest_vals = torch.cat([c[:, :, :, -1:].contiguous() for c in contexts_multi_sample], dim=3)
-                        feature_list.append(latest_vals)
+        pred_np = np.concatenate(chunk_predictions, axis=0)
+        gt_np = np.concatenate(chunk_ground_truths, axis=0)
 
-                    if spatial_encoder is not None:
-                        feature_list.extend([h_spatial_expanded, h_temporal, day_of_week])
-                    else:
-                        feature_list.extend([h_combined, day_of_week])
-                    
-                    y_aug = torch.cat(feature_list, dim=-1) # [W, S, M, F_aug]
-                    
-                    # Flatten for model: [WSM, F_aug]
-                    y_aug_flat = y_aug.view(WSM, -1)
+        sort_idx = np.argsort(np.array(chunk_sim_ids))
+        pred_np = pred_np[sort_idx]
+        gt_np = gt_np[sort_idx]
 
-                    if is_generative_model:
-                        samples_flat = temporal_model(y_aug_flat, num_steps=num_steps)
-                        samples = samples_flat.view(WSNV)
-                        mu_pred = samples
-                        var_pred = torch.zeros_like(samples)
-                    else:
-                        mu_pred_flat, var_pred_flat = temporal_model(y_aug_flat)
-                        # Reshape to 3D [B*S, M, V] for sample_mixed which expects 3 dimensions
-                        mu_pred = mu_pred_flat.view(WS, num_msoas, num_prediction)
-                        var_pred = var_pred_flat.view(WS, num_msoas, num_prediction)
-                        
-                        types = getattr(dataset_directory, 'prediction_distribution_types', ['nb'] * num_prediction)
-                        samples_3d = sample_mixed(
-                            mu_pred=mu_pred, var_pred=var_pred, types=types,
-                            parameterization=getattr(temporal_model, 'parameterization', 'natural'),
-                            transform=getattr(temporal_model, 'transform_type', 'softplus')
-                        ) # [WS, M, V]
-                        
-                        # Reshape back to 4D [W, S, M, V] for storage
-                        samples = samples_3d.view(WSNV)
-                        mu_pred = mu_pred.view(WSNV)
-                        var_pred = var_pred.view(WSNV)
+        sim_to_date = {}
+        for sim_id in dataset_directory.test_sims:
+            sim_idx = dataset_directory.sim_id_to_idx[sim_id]
+            t = from_index + context_size + current_test_window
+            if t >= dataset_directory.full_data_shape[1]:
+                continue
+            date_idx = int(dataset_directory.raw_data_tensor[0, sim_idx, t].item())
+            if 0 <= date_idx < len(all_dates):
+                sim_to_date[sim_id] = all_dates[date_idx]
+            else:
+                sim_to_date[sim_id] = None
 
-                    # Store results (masking by validity if needed, but here we just fill)
-                    batch_samples_tensor[:, :, step] = samples
-                    mu_preds_tensor[:, :, step] = mu_pred
-                    var_preds_tensor[:, :, step] = var_pred
+        ordered_dates = [sim_to_date.get(sim_id) for sim_id in sorted(dataset_directory.test_sims)]
 
-                    # Update context for next step using precomputed mapping.
-                    for c_idx, v_idx in ctx_to_pred_idx.items():
-                        p_raw = samples[:, :, :, v_idx:v_idx+1] # [W, S, M, 1]
-                        
-                        if hasattr(temporal_model, 'scale'):
-                            p_scaled = temporal_model.scale(p_raw, indices=[v_idx])
-                        else:
-                            # Fallback to GPU-based z-score scaling if scalers are available in model
-                            means = temporal_model.means if hasattr(temporal_model, 'means') else 0.0
-                            stds = temporal_model.stds if hasattr(temporal_model, 'stds') else 1.0
-                            p_scaled = (p_raw - means[v_idx]) / stds[v_idx]
+        _save_chronos_window_outputs(
+            output_folder=output_folder,
+            dataset_directory=dataset_directory,
+            prediction_indices=prediction_indices,
+            current_test_window=current_test_window,
+            global_predictions=pred_np[:, :, None, :],
+            global_ground_truth=gt_np[:, :, None, :],
+            actual_dates=ordered_dates,
+            from_index=from_index + context_size,
+        )
 
-                        # Cycle context: [W, S, M, L] 
-                        contexts_multi_sample[c_idx] = torch.cat(
-                            [contexts_multi_sample[c_idx][:, :, :, 1:], p_scaled], dim=3
-                        )
+    for metric_name, values in spatial_scores.items():
+        if len(values) == 0:
+            continue
+        metric_array = np.stack(values, axis=0)
+        np.save(os.path.join(output_folder, f"spatial_scores_{metric_name}.npy"), metric_array)
 
-                # Quantile levels — constant, so allocate once outside the per-window loop.
-                q = torch.tensor([0.5, 0.025, 0.975, 0.25, 0.75], device=device)
-
-                # Processing outputs for each window in the batch
-                for i in range(W):
-                    window_idx_global = batch_start + i
-                    starting_timestep = starting_timesteps[i].item()
-                    end_t = min(starting_timestep + 60, max_timestep)
-                    num_steps_to_predict = end_t - starting_timestep
-                    
-                    # Truncate to actual horizon for this window: [S, T, M, V]
-                    samples_win = batch_samples_tensor[i, :, :num_steps_to_predict] 
-                    mu_win = mu_preds_tensor[i, :, :num_steps_to_predict]
-                    var_win = var_preds_tensor[i, :, :num_steps_to_predict]
-                    
-                    # GPU-native Quantiles: [5, T, M, V]
-                    quantiles = torch.quantile(samples_win, q, dim=0)
-                    preds_unscaled = quantiles[0]
-                    preds_lower_95 = quantiles[1]
-                    preds_upper_95 = quantiles[2]
-                    preds_lower_50 = quantiles[3]
-                    preds_upper_50 = quantiles[4]
-
-                    # Ground Truth slice for this window: [T, M, V]
-                    truth_win = truth_unscaled_gpu[starting_timestep : starting_timestep + num_steps_to_predict, :num_msoas, :]
-                    
-                    # Torch-Native Scoring (Vectorized across T, M, V)
-                    is_scores_win = interval_score_torch(truth_win, preds_lower_95, preds_upper_95)
-                    crps_scores_win = crps_torch(truth_win, samples_win)
-                    
-                    # ES and Variogram: Vectorized across T for each prediction variable
-                    es_scores_win = torch.zeros(num_steps_to_predict, num_prediction, device=device)
-                    vario_scores_win = torch.zeros(num_steps_to_predict, num_prediction, device=device)
-                    for v in range(num_prediction):
-                        es_scores_win[:, v] = energy_score_torch(truth_win[:, :, v], samples_win[:, :, :, v])
-                        vario_scores_win[:, v] = variogram_torch(truth_win[:, :, v], samples_win[:, :, :, v], p=0.5)
-
-                    # Log-transformed evaluation
-                    truth_win_log = torch.log1p(truth_win)
-                    preds_lower_95_log = torch.log1p(preds_lower_95)
-                    preds_upper_95_log = torch.log1p(preds_upper_95)
-                    samples_win_log = torch.log1p(samples_win)
-
-                    is_scores_win_log = interval_score_torch(truth_win_log, preds_lower_95_log, preds_upper_95_log)
-                    crps_scores_win_log = crps_torch(truth_win_log, samples_win_log)
-
-                    es_scores_win_log = torch.zeros(num_steps_to_predict, num_prediction, device=device)
-                    vario_scores_win_log = torch.zeros(num_steps_to_predict, num_prediction, device=device)
-                    for v in range(num_prediction):
-                        es_scores_win_log[:, v] = energy_score_torch(truth_win_log[:, :, v], samples_win_log[:, :, :, v])
-                        vario_scores_win_log[:, v] = variogram_torch(truth_win_log[:, :, v], samples_win_log[:, :, :, v], p=0.5)
-
-                    ###################################################################
-                    # Batched GPU → CPU transfer.                                     #
-                    # Group tensors by shape, stack, do one .cpu().numpy() per group.  #
-                    # This reduces 13 individual CUDA sync points down to 3.           #
-                    ###################################################################
-
-                    # Group 1: shape [S, T, M, V] — sample-level tensors (3 tensors → 1 transfer)
-                    stv_stack = torch.stack([samples_win, mu_win, var_win], dim=0)  # [3, S, T, M, V]
-                    stv_np = stv_stack.cpu().numpy()
-                    samples_win_np = stv_np[0]
-                    mu_win_np      = stv_np[1]
-                    var_win_np     = stv_np[2]
-
-                    # Group 2: shape [T, M, V] — per-node prediction & scoring tensors (10 tensors → 1 transfer)
-                    tmv_stack = torch.stack([
-                        preds_unscaled, preds_lower_95, preds_upper_95,
-                        preds_lower_50, preds_upper_50, truth_win,
-                        is_scores_win, crps_scores_win,
-                        is_scores_win_log, crps_scores_win_log
-                    ], dim=0)  # [10, T, M, V]
-                    tmv_np = tmv_stack.cpu().numpy()
-                    preds_unscaled_np = tmv_np[0]
-                    preds_lower_95_np = tmv_np[1]
-                    preds_upper_95_np = tmv_np[2]
-                    preds_lower_50_np = tmv_np[3]
-                    preds_upper_50_np = tmv_np[4]
-                    truth_win_np      = tmv_np[5]
-                    is_scores_np      = tmv_np[6]
-                    crps_scores_np    = tmv_np[7]
-                    is_scores_log_np  = tmv_np[8]
-                    crps_scores_log_np = tmv_np[9]
-
-                    # Group 3: shape [T, V] — spatial scoring tensors (4 tensors → 1 transfer)
-                    tv_stack = torch.stack([es_scores_win, vario_scores_win, es_scores_win_log, vario_scores_win_log], dim=0)  # [4, T, V]
-                    tv_np = tv_stack.cpu().numpy()
-                    es_scores_np        = tv_np[0]
-                    vario_scores_np     = tv_np[1]
-                    es_scores_log_np    = tv_np[2]
-                    vario_scores_log_np = tv_np[3]
-
-                    # Prepare and save Feather tables
-                    T_win = num_steps_to_predict
-                    S_win = num_samples
-                    M_win = num_msoas
-                    V_win = num_prediction
-                    
-                    # Prediction Table
-                    t_grid = np.repeat(np.arange(starting_timestep, starting_timestep + T_win), M_win)
-                    m_grid = np.tile(np.arange(M_win), T_win)
-                    is_window_start = (t_grid == starting_timestep).astype(np.int8)
-                    
-                    dynamic_cols = {}
-                    for j, name in enumerate(prediction_names):
-                        dynamic_cols[f"{name}_unscaled"] = preds_unscaled_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_unscaled_gt"] = truth_win_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_lower_95"] = preds_lower_95_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_upper_95"] = preds_upper_95_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_lower_50"] = preds_lower_50_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_upper_50"] = preds_upper_50_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_IS_95"] = is_scores_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_CRPS"] = crps_scores_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_IS_95_log"] = is_scores_log_np[:, :, j].reshape(-1)
-                        dynamic_cols[f"{name}_CRPS_log"] = crps_scores_log_np[:, :, j].reshape(-1)
-
-                    pred_tbl = pa.table({"timestep": t_grid, "msoa": m_grid, "is_window_start": is_window_start, **dynamic_cols})
-                    
-                    prediction_folder = f"{output_folder}/predictions/{starting_timestep}"
-                    os.makedirs(prediction_folder, exist_ok=True)
-                    feather.write_feather(pred_tbl, f"{prediction_folder}/predictions.feather", compression="lz4")
-
-                    # Sample Spaghetti Table
-                    vals = samples_win_np.reshape(-1)
-                    mu_vals = mu_win_np.reshape(-1)
-                    var_vals = var_win_np.reshape(-1)
-                    
-                    s_idx_col = np.repeat(np.arange(S_win), T_win * M_win * V_win)
-                    t_idx_col = np.tile(np.repeat(np.arange(T_win), M_win * V_win), S_win)
-                    m_idx_col = np.tile(np.repeat(np.arange(M_win), V_win), S_win * T_win)
-                    v_idx_col = np.tile(np.arange(V_win), S_win * T_win * M_win)
-                    
-                    sp_tbl = pa.table({
-                        "window_start": np.full(S_win*T_win*M_win*V_win, starting_timestep, dtype=np.int32),
-                        "timestep": (starting_timestep + t_idx_col).astype(np.int32),
-                        "window_step": t_idx_col.astype(np.int32),
-                        "msoa": m_idx_col.astype(np.int32),
-                        "msoa_name": pa.array(msoa_name_map[m_idx_col]),
-                        "sample_idx": s_idx_col.astype(np.int32),
-                        "burden_type": pa.array(burden_map[v_idx_col]),
-                        "value": vals,
-                        "mu_pred": mu_vals,
-                        "var_pred": var_vals,
-                    })
-                    feather.write_feather(sp_tbl, f"{prediction_folder}/sample_spaghetti.feather", compression="lz4")
-
-                    # Spatial Scores Table
-                    es_tbls = []
-                    ts_vec = np.arange(starting_timestep, starting_timestep + T_win)
-                    for v, bname in enumerate(prediction_names):
-                        es_tbls.append(pa.table({
-                            "timestep": ts_vec,
-                            "burden": pa.array([bname] * T_win),
-                            "energy_score": es_scores_np[:, v],
-                            "variogram_score_p05": vario_scores_np[:, v],
-                            "energy_score_log": es_scores_log_np[:, v],
-                            "variogram_score_p05_log": vario_scores_log_np[:, v],
-                        }))
-                    feather.write_feather(pa.concat_tables(es_tbls), f"{prediction_folder}/spatial_scores.feather", compression="lz4")
-
-                    window_time = time.time() - window_start_time
-                    window_times_seconds.append(window_time)
-
-            timing_table = pa.table({"window_times_seconds": pa.array(window_times_seconds)})
-            feather.write_feather(timing_table, os.path.join(output_folder, "window_times.feather"), compression="lz4")
-
+    return predictions

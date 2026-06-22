@@ -1,0 +1,41 @@
+experiment:
+  name: "CHRONOS2_SMOKE_TEST"
+  description: "Fast smoke test for Chronos-only pipeline"
+
+data_source: "configs/data/1K_june_min.yaml"
+
+output:
+  base_dir: "RESULTS/SMOKE/{name}_{timestamp}"
+
+columns:
+  prediction: ["daily_hospitalised", "deaths", "Rt2"]
+  context: ["daily_hospitalised", "deaths"]
+  continuous_targets: ["Rt2"]
+
+execution:
+  mode: "test"
+  device: "cuda"
+
+context:
+  size: 14
+  min_timestep: 0
+
+model:
+  chronos_model_id: "amazon/chronos-2"
+  chronos:
+    mode: "lora"
+    learning_rate: 1.0e-5
+    steps: 20
+    batch_size: 8
+    count_noise_low: 0.0
+    count_noise_high: 1.0
+
+testing:
+  autoregressive_windows: [7]
+  num_samples: 20
+  num_steps: 20
+  window_batch_size: 4
+
+transfer:
+  scalers_from: null
+  checkpoints_from: null

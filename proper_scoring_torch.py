@@ -99,3 +99,58 @@ def variogram_torch(y_true, samples, p=0.5):
     
     vs = torch.sum((y_diff - x_diff_mean) ** 2, dim=(-1, -2))
     return vs
+
+
+def compute_scores_torch(forecast_sample, y, alpha=0.05, score_type="all", weighted=False):
+    """
+    Compute the supported proper scoring rules for torch tensors.
+
+    Args:
+        forecast_sample: Predictive samples with shape [S, ..., T, M]
+        y: Ground truth tensor broadcastable to the non-sample dimensions of forecast_sample
+        alpha: Interval score level
+        score_type: "all" or a single score name
+        weighted: Present for API compatibility; currently unused
+
+    Returns:
+        A tuple of requested scores in the order:
+        interval_score, crps, energy_score, variogram_score
+    """
+    del weighted
+
+    if score_type not in {"all", "interval", "crps", "energy", "variogram"}:
+        raise ValueError(f"Unsupported score_type: {score_type}")
+
+    if forecast_sample.dim() < 3:
+        raise ValueError("forecast_sample must have at least 3 dimensions: [S, ..., T, M]")
+
+    lower = torch.quantile(forecast_sample, 0.05, dim=0)
+    upper = torch.quantile(forecast_sample, 0.95, dim=0)
+    interval_score = interval_score_torch(y, lower, upper, alpha=alpha)
+
+    crps = crps_torch(y, forecast_sample)
+
+    if forecast_sample.dim() == 3:
+        energy_input = forecast_sample
+        energy_target = y
+        variogram_input = forecast_sample
+        variogram_target = y
+    else:
+        energy_input = forecast_sample.reshape(forecast_sample.shape[0], -1, forecast_sample.shape[-1])
+        energy_target = y.reshape(-1, y.shape[-1])
+        variogram_input = energy_input
+        variogram_target = energy_target
+
+    energy_score = energy_score_torch(energy_target, energy_input)
+    variogram_score = variogram_torch(variogram_target, variogram_input)
+
+    if score_type == "interval":
+        return interval_score
+    if score_type == "crps":
+        return crps
+    if score_type == "energy":
+        return energy_score
+    if score_type == "variogram":
+        return variogram_score
+
+    return interval_score, crps, energy_score, variogram_score

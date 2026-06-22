@@ -67,7 +67,7 @@ def create_test_chunks(test_sims, chunk_size):
     return chunks
 
 
-def testing_sliding_window(
+def get_sliding_window_predictions(
     temporal_model,
     interaction_encoder,
     graph_data,
@@ -252,7 +252,3 @@ def testing_sliding_window(
         np.save(os.path.join(output_folder, f"spatial_scores_{metric_name}.npy"), metric_array)
 
     return predictions
-
-
-def get_sliding_window_predictions(*args, **kwargs):
-    return testing_sliding_window(*args, **kwargs)

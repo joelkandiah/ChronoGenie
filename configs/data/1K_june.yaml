@@ -1,0 +1,20 @@
+# Data Source Configuration
+# This file defines paths to data files that change infrequently.
+# Multiple experiment configs can reference the same data source.
+
+name: "1K_DATA"
+description: "1000 simulation dataset used for generating the paper's results"
+
+# Data file paths (relative to project root or absolute)
+data_csv: "DATA/data_20251008_Gatesnewnorth_Rt_20251113_Rt2.csv"
+metadata_csv: "DATA/settings_20251008_Gatesnewnorth_sims.csv"
+static_features_csv: "DATA/static_features_12_10_2025.csv"
+
+# Train/Test/Validation split (can be counts or ratios)
+# If values sum to 1.0, they're treated as ratios
+# If values are integers > 1, they're treated as counts
+split: [700, 150, 150]
+
+# Column naming conventions
+column_with_date: "date"
+column_with_geography: "MSOA"

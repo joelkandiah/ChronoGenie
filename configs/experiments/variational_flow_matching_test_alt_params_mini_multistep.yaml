@@ -1,0 +1,82 @@
+# Experiment: VARIATIONAL_FLOW_MATCHING_TEST_MINI_MULTISTEP
+# Variational Flow Matching model predicting hospitalisations, deaths, and Rt2 using the Multistep predictions during training
+experiment:
+  name: "VARIATIONAL_FLOW_MATCHING_TEST_ALT_PARAMS_MINI_NEW_CONTEXT_MULTISTEP"
+  description: "Variational Flow Matching model predicting daily hospitalisations and deaths with non-natural params and a smaller network"
+
+data_source: "configs/data/1K_june.yaml"
+
+output:
+  base_dir: "RESULTS/RESULTS_VARIATIONAL_FLOW_MATCHING_ALT_PARAMS_MINI/{name}"
+
+columns:
+  prediction: ["daily_hospitalised", "deaths", "Rt2"]
+  context: ["daily_hospitalised", "deaths"]
+  continuous_targets: ["Rt2"]
+
+execution:
+  mode: "train"
+  resume_training: false
+  device: "cuda"
+  multistep_k: 3
+  multistep_weights: [1.0, 0.5, 0.25]
+
+training:
+  num_epochs: 40000
+  learning_rate: 1.0e-5
+  num_batches: 10
+  batch_size: 64
+  use_early_stopping: false
+  use_compile: true
+  validation_thinning_factor: 50
+
+context:
+  size: 30
+  include_latest: true
+  min_timestep: 0
+
+embeddings:
+  spatial: 8
+  temporal: 8
+
+model:
+  type: "variational_flow_matching"
+
+  variational_flow_matching:
+    hidden_layers: [256, 128, 128]
+    sigma: 1.0
+    dropout: 0.1
+    parameterization: "mean"
+    vfm_debug: false
+    vfm_skip_connection: false
+    latent_dim: 4
+    kl_weight: 1.0
+    kl_warmup_steps: 1000
+    encoder_hidden: [128, 128]
+
+  spatial_encoder_type: "gnn"
+
+  gnn:
+    dropout: 0.1
+    self_loops: true
+    residual_connections: true
+    attention_heads: [2, 2]
+    attention_head_concat: [true, false]
+
+graph:
+  edge_threshold_spatial: null
+  edge_threshold_temporal: null
+  use_edge_attr: true
+  edge_attr_dim: 1
+  use_k_nearest_features: true
+  use_k_nearest_distance: true
+  knn_k: 9
+
+ablations:
+  spatial: false
+
+testing:
+  autoregressive_windows: [180]
+  num_samples: 200
+  num_steps: 50
+  window_batch_size: 8

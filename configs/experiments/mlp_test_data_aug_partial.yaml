@@ -1,0 +1,74 @@
+# Experiment: MLP_TEST_AUG
+# Equivalent of NORMALISING_FLOW_TEST but using an MLP predictive head and augmented data which is a mixture 80% Simulated and 20% Augmented
+experiment:
+  name: "MLP_TEST_AUG_MIXTURE_80_20"
+  description: "MLP baseline model predicting daily hospitalisations, deaths, and Rt2 with augmented training data"
+
+data_source: "configs/data/1K_june.yaml"
+
+output:
+  base_dir: "RESULTS/RESULTS_MLP/{name}"
+
+columns:
+  prediction: ["daily_hospitalised", "deaths", "Rt2"]
+  context: ["daily_hospitalised", "deaths"]
+  continuous_targets: ["Rt2"]
+
+execution:
+  mode: "train"
+  resume_training: false
+  device: "cuda"
+  use_compile: false
+
+training:
+  num_epochs: 25000
+  learning_rate: 1.0e-3
+  num_batches: 10
+  batch_size: 64
+  use_early_stopping: false
+  validation_thinning_factor: 50
+  validation_batch_size: 64
+  augmentation:
+    poisson_noise_context: true
+    thinning_factor: 5
+
+context:
+  size: 30
+  include_latest: true
+  min_timestep: 0
+
+embeddings:
+  spatial: 8
+  temporal: 8
+
+model:
+  type: "mlp"
+  
+  temporal_mlp:
+    hidden_layers: [256, 256, 128, 128]
+  
+  spatial_encoder_type: "gnn"
+
+  gnn:
+    dropout: 0.1
+    self_loops: true
+    residual_connections: true
+    attention_heads: [2, 2]
+    attention_head_concat: [true, false]
+
+graph:
+  edge_threshold_spatial: null
+  edge_threshold_temporal: null
+  use_edge_attr: true
+  edge_attr_dim: 1
+  use_k_nearest_features: true
+  use_k_nearest_distance: true
+  knn_k: 9
+
+ablations:
+  spatial: false
+
+testing:
+  autoregressive_windows: [180]
+  num_samples: 200
+  window_batch_size: 8

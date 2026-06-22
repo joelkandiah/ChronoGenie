@@ -1,0 +1,76 @@
+# Experiment: SUNDERLAND_GNN_FINAL_HOSP_DEATHS_RT_1K
+# Transfer R_t model to Sunderland geography
+experiment:
+  name: "SUNDERLAND_GNN_FINAL_HOSP_DEATHS_RT_1K"
+  description: "Transfer GNN R_t model to Sunderland - predicts R_t, hospitalisations, and deaths"
+
+data_source: "configs/data/1K_june_SUNDERLAND.yaml"
+
+output:
+  base_dir: "RESULTS_LATEST_07_12_25/{name}"
+
+columns:
+  # KEY DIFFERENCE: Includes Rt2 in predictions
+  prediction: ["Rt2", "daily_hospitalised", "deaths"]
+  context: ["daily_hospitalised", "deaths"]
+  # KEY DIFFERENCE: Rt2 is continuous (LogNormal distribution)
+  continuous_targets: ["Rt2"]
+
+execution:
+  mode: "test"  # Test only - no training
+  resume_training: false
+  device: "cuda"
+
+# TRANSFER CONFIGURATION
+transfer:
+  scalers_from: "configs/data/1K_june.yaml"
+  checkpoints_from: "RESULTS_LATEST_07_12_25/GNN_FINAL_HOSP_DEATHS_RT_1K"
+
+training:
+  num_iterations: 300
+  learning_rate: 1.0e-3
+  num_batches: 10
+  batch_size: 64
+  use_early_stopping: false
+
+context:
+  size: 30
+  include_latest: true
+  min_timestep: 0
+
+embeddings:
+  spatial: 8
+  temporal: 8
+
+model:
+  temporal_mlp:
+    hidden_layers: [256, 256, 128, 128]
+  
+  spatial_encoder_type: "gnn"
+  
+  gnn:
+    dropout: 0.1
+    self_loops: true
+    residual_connections: true
+    attention_heads: [2, 2]
+    attention_head_concat: [true, false]
+  
+  mlp_encoder:
+    hidden_layers: [128, 64, 32]
+    dropout: 0.2
+
+graph:
+  edge_threshold_spatial: null
+  edge_threshold_temporal: null
+  use_edge_attr: true
+  edge_attr_dim: 1
+  use_k_nearest_features: true
+  use_k_nearest_distance: true
+  knn_k: 9
+
+ablations:
+  spatial: false
+
+testing:
+  autoregressive_windows: [180]
+  num_samples: 100

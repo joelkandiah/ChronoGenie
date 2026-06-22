@@ -1,0 +1,20 @@
+# Data Source Configuration
+# This file defines paths to data files that change infrequently.
+# Multiple experiment configs can reference the same data source.
+
+name: "1K_DATA_SUNDERLAND"
+description: "1000 simulation dataset used for generating the paper's results SUNDERLAND SPECIFIC"
+
+# Data file paths (relative to project root or absolute)
+data_csv: "DATA/data_20251201_Sunderland.csv"
+metadata_csv: "DATA/settings_20251201_Sunderland_sims.csv"
+static_features_csv: "DATA/static_features_SUNDERLAND_filtered.csv"
+
+# Train/Test/Validation split (can be counts or ratios)
+# If values sum to 1.0, they're treated as ratios
+# If values are integers > 1, they're treated as counts
+split: [0, 0, 0]
+
+# Column naming conventions
+column_with_date: "date"
+column_with_geography: "MSOA"

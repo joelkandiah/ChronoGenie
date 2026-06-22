@@ -117,7 +117,7 @@ def get_sliding_window_predictions(
 
     test_chunks = create_test_chunks(dataset_directory.test_sims, max(1, window_batch_size))
 
-    all_dates = sorted(dataset_directory.dataframe["date"].unique())
+    all_dates = sorted(dataset_directory.df_data["date"].unique())
 
     for current_test_window in range(autoregressive_window_size):
         print(f"Testing timestep {from_index + current_test_window}")

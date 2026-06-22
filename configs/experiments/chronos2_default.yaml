@@ -8,9 +8,8 @@ output:
   base_dir: "RESULTS/RESULTS_CHRONOS/{name}_{timestamp}"
 
 columns:
-  prediction: ["daily_hospitalised", "deaths", "Rt2"]
+  prediction: ["daily_hospitalised", "deaths"]
   context: ["daily_hospitalised", "deaths"]
-  continuous_targets: ["Rt2"]
 
 execution:
   mode: "both"

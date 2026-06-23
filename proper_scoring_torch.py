@@ -104,17 +104,6 @@ def variogram_torch(y_true, samples, p=0.5):
 def compute_scores_torch(forecast_sample, y, alpha=0.05, score_type="all", weighted=False):
     """
     Compute the supported proper scoring rules for torch tensors.
-
-    Args:
-        forecast_sample: Predictive samples with shape [S, ..., T, M]
-        y: Ground truth tensor broadcastable to the non-sample dimensions of forecast_sample
-        alpha: Interval score level
-        score_type: "all" or a single score name
-        weighted: Present for API compatibility; currently unused
-
-    Returns:
-        A tuple of requested scores in the order:
-        interval_score, crps, energy_score, variogram_score
     """
     del weighted
 
@@ -124,39 +113,36 @@ def compute_scores_torch(forecast_sample, y, alpha=0.05, score_type="all", weigh
     if forecast_sample.dim() < 3:
         raise ValueError("forecast_sample must have at least 3 dimensions: [S, ..., T, M]")
 
-    # Add this to see what shapes get unpacked inside the scoring file:
-    print("\n" + "-"*40)
-    print("SCORING CORE DIAGNOSTIC:")
-    print(f"Received forecast_sample shape: {forecast_sample.shape}")
-    print(f"Received ground truth y shape:   {y.shape}")
+    # 1. Standardize dimensions so the sample dimension is ALWAYS at dim=0
+    # Current input: [Batch (0), Variables (1), Samples (2), Nodes (3)]
+    # Target for metrics: [Samples (2), Batch (0), Variables (1), Nodes (3)]
+    samples_first = forecast_sample.permute(2, 0, 1, 3) 
     
-    # Calculate intervals (assuming sample dimension is handled here)
-    # Let's inspect lower/upper calculation shapes:
-    lower = torch.quantile(forecast_sample, alpha / 2, dim=2) # checking if dim=2 is right
-    upper = torch.quantile(forecast_sample, 1 - alpha / 2, dim=2)
-    
-    print(f"Calculated interval lower bound shape: {lower.shape}")
-    print(f"Calculated interval upper bound shape: {upper.shape}")
-    print(f"Target 'y' shape for subtraction:      {y.shape}")
-    print("-"*40 + "\n")
-    
+    # 2. Add a matching singleton sample dimension to y for safe right-to-left broadcasting
+    # y changes from [Batch, Variables, Nodes] -> [1, Batch, Variables, Nodes]
+    y_broadcastable = y.unsqueeze(0)
+
+    # 3. Compute interval bounds along dim=0 now that it's permuted
+    lower = torch.quantile(samples_first, alpha / 2, dim=0)
+    upper = torch.quantile(samples_first, 1 - alpha / 2, dim=0)
+
+    # Interval score expects matching dimensions without sample dimension (both [4, 2, 84])
     interval_score = interval_score_torch(y, lower, upper, alpha=alpha)
 
-    crps = crps_torch(y, forecast_sample)
+    # CRPS functions now receive properly permuted matching layouts
+    crps = crps_torch(y_broadcastable, samples_first)
 
-    if forecast_sample.dim() == 3:
-        energy_input = forecast_sample
-        energy_target = y
-        variogram_input = forecast_sample
-        variogram_target = y
-    else:
-        energy_input = forecast_sample.reshape(forecast_sample.shape[0], -1, forecast_sample.shape[-1])
-        energy_target = y.reshape(-1, y.shape[-1])
-        variogram_input = energy_input
-        variogram_target = energy_target
+    # 4. Prepare inputs for multivariate scores (Energy & Variogram)
+    # They expect 3D arrays: [Samples, Time/Batch, Channels/Nodes]
+    # We collapse Batch & Variables together to form a uniform multivariate space
+    S = samples_first.size(0)
+    M = samples_first.size(-1) # Nodes (84)
+    
+    energy_input = samples_first.reshape(S, -1, M)
+    energy_target = y_broadcastable.reshape(-1, M)
 
     energy_score = energy_score_torch(energy_target, energy_input)
-    variogram_score = variogram_torch(variogram_target, variogram_input)
+    variogram_score = variogram_torch(energy_target, energy_input)
 
     if score_type == "interval":
         return interval_score

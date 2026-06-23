@@ -119,12 +119,15 @@ def sample_from_quantiles(
 class ChronosTemporalAdapter:
     model_id: str = "amazon/chronos-2"
     device: str = "cuda"
+    cache_dir: str | None = None
 
     def __post_init__(self) -> None:
-        cache_dir = os.environ.get("HF_HOME") or os.path.join(
+        cache_dir = self.cache_dir or os.environ.get("CHRONOS_CACHE_DIR") or os.environ.get("HUGGINGFACE_HUB_CACHE") or os.environ.get("HF_HOME") or os.path.join(
             os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
             "huggingface",
         )
+        os.makedirs(cache_dir, exist_ok=True)
+        self.cache_dir = cache_dir
         self.pipeline = Chronos2Pipeline.from_pretrained(self.model_id, cache_dir=cache_dir)
         self.is_chronos_model = True
         self.is_generative_model = False

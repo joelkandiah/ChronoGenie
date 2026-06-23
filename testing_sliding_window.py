@@ -173,11 +173,12 @@ def get_sliding_window_predictions(
 
                 means = sampled.mean(dim=1)
                 pred_time_idx = from_index + context_size + current_test_window
-                predictions[prediction_indices, sim_idx, pred_time_idx] = means
+                predictions[prediction_indices, sim_idx, :, pred_time_idx] = means
 
                 gt = ground_truths[
                     prediction_indices,
                     sim_idx,
+                    :,
                     pred_time_idx,
                 ]
 

@@ -5,6 +5,7 @@ Chronos-only sliding-window autoregressive testing.
 
 import os
 from collections import defaultdict
+import pandas as pd
 
 import numpy as np
 import torch
@@ -138,7 +139,7 @@ def get_sliding_window_predictions(
                     context_start = from_index + current_test_window
                     context_end = context_start + context_size
                     context_tensors.append(
-                        predictions[idx, sim_idx, context_start:context_end]
+                        predictions[idx, sim_idx, :, context_start:context_end]
                     )
 
                 packed_context = pack_chronos_input(
@@ -223,14 +224,15 @@ def get_sliding_window_predictions(
 
         sim_to_date = {}
         for sim_id in dataset_directory.test_sims:
-            sim_idx = dataset_directory.resolve_sim_idx(sim_id)
             t = from_index + context_size + current_test_window
-            if t >= dataset_directory.full_data_shape[1]:
+            if t >= dataset_directory.num_time_steps:
                 continue
-            date_idx = int(dataset_directory.raw_data_tensor[0, sim_idx, t].item())
-            if 0 <= date_idx < len(all_dates):
-                sim_to_date[sim_id] = all_dates[date_idx]
-            else:
+            try:
+                date_val = dataset_directory.df_data.loc[(sim_id, 0, t), 'date']
+                if isinstance(date_val, pd.Series):
+                    date_val = date_val.iloc[0]
+                sim_to_date[sim_id] = date_val
+            except KeyError:
                 sim_to_date[sim_id] = None
 
         ordered_dates = [sim_to_date.get(sim_id) for sim_id in sorted(dataset_directory.test_sims)]

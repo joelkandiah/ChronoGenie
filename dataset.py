@@ -311,28 +311,51 @@ class DatesetDirectory():
               f"validation ({self.split[2]} instances)...")
 
     def resolve_sim_idx(self, sim_id):
-        """Resolve simulation identifiers coming from numpy/pandas containers."""
+        """Resolve simulation identifiers coming from numpy/pandas containers to dict keys."""
         # 1. Direct match check
         if sim_id in self.sim_id_to_idx:
             return self.sim_id_to_idx[sim_id]
 
-        # 2. Extract native python type if it's a numpy scalar
+        # 2. Extract native scalar if it's a numpy/pandas wrapper
         native_val = sim_id.item() if hasattr(sim_id, "item") else sim_id
 
-        # 3. Check native int/float and string variations of the clean value
-        candidates = [native_val, str(native_val)]
+        # 3. Direct match check on native scalar
+        if native_val in self.sim_id_to_idx:
+            return self.sim_id_to_idx[native_val]
+
+        # 4. Generate all possible type variations for our target value
+        str_val = str(native_val).strip()
         
         try:
-            candidates.append(int(native_val))
+            int_val = int(native_val)
         except (TypeError, ValueError):
-            pass
+            int_val = None
 
-        # 4. Search matching keys
-        for candidate in candidates:
-            if candidate in self.sim_id_to_idx:
-                return self.sim_id_to_idx[candidate]
+        try:
+            # Handle cases where it might be stored like 10.0
+            float_val = float(native_val)
+        except (TypeError, ValueError):
+            float_val = None
 
-        raise KeyError(f"Could not resolve sim_id {sim_id} (type: {type(sim_id)}). Clean value extracted: {native_val}")
+        # 5. Check these variations against the dictionary keys
+        # We also cast the dictionary keys to check for matching values
+        for key in self.sim_id_to_idx.keys():
+            str_key = str(key).strip()
+            
+            # Check if strings match
+            if str_val == str_key or str_val == str_key.split('.')[0]:
+                return self.sim_id_to_idx[key]
+                
+            # Check if integers match
+            if int_val is not None:
+                try:
+                    if int_val == int(float(key)):
+                        return self.sim_id_to_idx[key]
+                except (TypeError, ValueError):
+                    pass
+
+        raise KeyError(f"Could not resolve sim_id {sim_id} (type: {type(sim_id)}). "
+                       f"Dictionary keys available: {list(self.sim_id_to_idx.keys())[:5]}...")
 
     def get_raw_data_split(self):
         """Get raw data with split labels."""

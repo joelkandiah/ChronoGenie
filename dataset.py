@@ -304,7 +304,6 @@ class DatesetDirectory():
             except (ValueError, TypeError):
                 pass
             try:
-                import numpy as np
                 self.sim_id_to_idx[np.int64(sim)] = i
             except Exception:
                 pass

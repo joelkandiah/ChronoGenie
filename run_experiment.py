@@ -223,7 +223,7 @@ def build_chronos_training_inputs(cfg: ExperimentConfig, dataset_directory: Date
     ctx_col_indices = [dataset_directory.columns_with_data.index(c) for c in cfg.columns_for_context]
     series = []
     for sim_id in dataset_directory.train_sims:
-        sim_idx = dataset_directory.sim_id_to_idx[sim_id]
+        sim_idx = dataset_directory.resolve_sim_idx(sim_id)
         history_tensors = [dataset_directory.raw_data_tensor[idx, sim_idx] for idx in ctx_col_indices]
         packed = pack_chronos_input(history_tensors, dataset_directory.static_features_tensor)
         series.append(packed)

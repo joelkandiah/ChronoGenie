@@ -296,6 +296,31 @@ class DatesetDirectory():
         for i, sim in enumerate(self.all_sims):
             self.sim_id_to_idx[sim] = i
             self.sim_id_to_idx[str(sim)] = i
+
+    def resolve_sim_idx(self, sim_id):
+        """Resolve simulation identifiers coming from numpy/pandas containers."""
+        if sim_id in self.sim_id_to_idx:
+            return self.sim_id_to_idx[sim_id]
+
+        candidates = []
+        if hasattr(sim_id, "item"):
+            try:
+                candidates.append(sim_id.item())
+            except Exception:
+                pass
+
+        candidates.append(str(sim_id))
+
+        try:
+            candidates.append(int(sim_id))
+        except (TypeError, ValueError):
+            pass
+
+        for candidate in candidates:
+            if candidate in self.sim_id_to_idx:
+                return self.sim_id_to_idx[candidate]
+
+        raise KeyError(sim_id)
         
         # Convert all data to [num_vars, sim, gid, tid] tensors
         # These will be shared by all ProcessedData instances
@@ -430,7 +455,7 @@ class ProcessedData(Dataset):
         """
         # Calculate which simulation and timestep this index corresponds to
         sim_id = self.sims[idx // self.valid_timesteps]
-        sim_idx = self.sim_id_to_idx[sim_id]
+        sim_idx = self.resolve_sim_idx(sim_id)
         
         # current_t starts from min_timestep, not 0
         current_t = (idx % self.valid_timesteps) + self.min_timestep

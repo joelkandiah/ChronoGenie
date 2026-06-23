@@ -131,7 +131,7 @@ def get_sliding_window_predictions(
             batch_ground_truths = []
 
             for sim_id in test_chunk:
-                sim_idx = dataset_directory.sim_id_to_idx[sim_id]
+                sim_idx = dataset_directory.resolve_sim_idx(sim_id)
 
                 context_tensors = []
                 for idx in context_indices:
@@ -223,7 +223,7 @@ def get_sliding_window_predictions(
 
         sim_to_date = {}
         for sim_id in dataset_directory.test_sims:
-            sim_idx = dataset_directory.sim_id_to_idx[sim_id]
+            sim_idx = dataset_directory.resolve_sim_idx(sim_id)
             t = from_index + context_size + current_test_window
             if t >= dataset_directory.full_data_shape[1]:
                 continue

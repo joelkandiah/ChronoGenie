@@ -291,11 +291,18 @@ class DatesetDirectory():
         self.raw_list_xr_data = [self.df_data[col].to_xarray()
                                  for col in self.columns_with_data]
         
-        self.all_sims = self.list_xr_data[0].sim.values.tolist()
+        # Pull unique IDs from the actual df index level 'sim' 
+        unique_sim_ids = self.df_data.index.get_level_values('sim').unique().tolist()
+        
+        self.all_sims = unique_sims  # keep this for references elsewhere
         self.sim_id_to_idx = {}
-        for i, sim in enumerate(self.all_sims):
+        for i, sim in enumerate(unique_sim_ids):
             self.sim_id_to_idx[sim] = i
             self.sim_id_to_idx[str(sim)] = i
+            try:
+                self.sim_id_to_idx[int(sim)] = i
+            except (ValueError, TypeError):
+                pass
 
         # Convert all data to [num_vars, sim, gid, tid] tensors
         # These will be shared by all ProcessedData instances

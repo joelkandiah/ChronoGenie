@@ -36,7 +36,7 @@ def crps_torch(y, samples):
     S = samples.size(0)
     # Reshape to [S, N] where N is everything else
     original_shape = samples.shape[1:]
-    samples_flat = samples.view(S, -1)
+    samples_flat = samples.reshape(S, -1)
     
     # We compute pairwise differences for term2.
     # To reduce memory overhead, we can utilize vectorization over N but compute Mean over S*S.
@@ -44,7 +44,7 @@ def crps_torch(y, samples):
     diffs = torch.abs(samples_flat.unsqueeze(1) - samples_flat.unsqueeze(0))
     term2_flat = 0.5 * torch.mean(diffs, dim=(0, 1))
     
-    term2 = term2_flat.view(original_shape)
+    term2 = term2_flat.reshape(original_shape)
     return term1 - term2
 
 def energy_score_torch(y_true, samples):

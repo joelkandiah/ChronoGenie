@@ -189,9 +189,21 @@ def get_sliding_window_predictions(
             if len(batch_predictions) == 0:
                 continue
 
+            # =================== DIAGNOSTICS START ===================
+            print("\n" + "="*50)
+            print("DIAGNOSTIC: TENSOR SHAPE VERIFICATION BEFORE SCORING")
+            print(f"Batch predictions list length: {len(batch_predictions)}")
+            print(f"First element in batch_predictions shape: {batch_predictions[0].shape if batch_predictions else 'Empty'}")
+            print(f"First element in batch_ground_truths shape: {batch_ground_truths[0].shape if batch_ground_truths else 'Empty'}")
+            
             pred_tensor = torch.stack(batch_predictions, dim=0)
             gt_tensor = torch.stack(batch_ground_truths, dim=0)
-
+            
+            print(f"Stacked pred_tensor shape: {pred_tensor.shape} (Expected: [Batch, Variables, Samples, Nodes])")
+            print(f"Stacked gt_tensor shape:   {gt_tensor.shape}   (Expected: [Batch, Variables, Nodes])")
+            print("="*50 + "\n")
+            # ==================== DIAGNOSTICS END ====================
+            
             if len(count_channel_positions) > 0:
                 gt_tensor[:, count_channel_positions] = torch.floor(torch.clamp(gt_tensor[:, count_channel_positions], min=0.0))
 

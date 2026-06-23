@@ -292,7 +292,10 @@ class DatesetDirectory():
                                  for col in self.columns_with_data]
         
         self.all_sims = self.list_xr_data[0].sim.values.tolist()
-        self.sim_id_to_idx = {sim: i for i, sim in enumerate(self.all_sims)}
+        self.sim_id_to_idx = {}
+        for i, sim in enumerate(self.all_sims):
+            self.sim_id_to_idx[sim] = i
+            self.sim_id_to_idx[str(sim)] = i
         
         # Convert all data to [num_vars, sim, gid, tid] tensors
         # These will be shared by all ProcessedData instances

@@ -292,9 +292,9 @@ class DatesetDirectory():
                                  for col in self.columns_with_data]
         
         # Pull unique IDs from the actual df index level 'sim' 
-        unique_sim_ids = self.df_data.index.get_level_values('sim').unique().tolist()
+        unique_sim_ids = self.df_sim_metadata.index.unique().tolist()
+        self.all_sims = unique_sim_ids
         
-        self.all_sims = unique_sims  # keep this for references elsewhere
         self.sim_id_to_idx = {}
         for i, sim in enumerate(unique_sim_ids):
             self.sim_id_to_idx[sim] = i
@@ -302,6 +302,11 @@ class DatesetDirectory():
             try:
                 self.sim_id_to_idx[int(sim)] = i
             except (ValueError, TypeError):
+                pass
+            try:
+                import numpy as np
+                self.sim_id_to_idx[np.int64(sim)] = i
+            except Exception:
                 pass
 
         # Convert all data to [num_vars, sim, gid, tid] tensors

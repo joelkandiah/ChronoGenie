@@ -33,7 +33,6 @@ class DataSourceConfig:
     column_with_date: str = "date"
     column_with_geography: str = "MSOA"
     description: str = ""
-    max_sims: Optional[int] = None
 
 
 @dataclass
@@ -90,7 +89,6 @@ def load_data_source(data_source_path: str) -> DataSourceConfig:
         split=ds_yaml["split"],
         column_with_date=ds_yaml.get("column_with_date", "date"),
         column_with_geography=ds_yaml.get("column_with_geography", "MSOA"),
-        max_sims=ds_yaml.get("max_sims"),
     )
 
 
@@ -193,7 +191,6 @@ def build_dataset_directory(cfg: ExperimentConfig) -> DatesetDirectory:
             column_with_geography=source_ds.column_with_geography,
             min_timestep=cfg.min_timestep,
             fit_scalers=True,
-            max_sims=ds.max_sims,
         )
         temporal_scalers = source_dataset_directory.temporal_scalers
         spatial_scaler = source_dataset_directory.spatial_scaler
@@ -215,7 +212,6 @@ def build_dataset_directory(cfg: ExperimentConfig) -> DatesetDirectory:
         fit_scalers=(temporal_scalers is None),
         inference_only=inference_only,
         output_dir=cfg.output_dir,
-        max_sims=ds.max_sims,
     )
 
 

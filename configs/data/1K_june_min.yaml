@@ -19,5 +19,4 @@ split: [700, 150, 150]
 column_with_date: "date"
 column_with_geography: "MSOA"
 
-# Optional cap applied before tensor materialization
-max_sims: 10
+

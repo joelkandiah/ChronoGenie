@@ -2,7 +2,7 @@ experiment:
   name: "CHRONOS2_SMOKE_TEST"
   description: "Fast smoke test for Chronos-only pipeline"
 
-data_source: "configs/data/1K_june_min.yaml"
+data_source: "configs/data/1K_june.yaml"
 
 output:
   base_dir: "RESULTS/SMOKE/{name}_{timestamp}"

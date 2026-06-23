@@ -101,8 +101,7 @@ class DatesetDirectory():
                  fit_scalers=True,
                  inference_only=False,
                  min_timestep=0,
-                 output_dir=None,
-                 max_sims=None
+                 output_dir=None
     ):
         """
         Initialize the dataset directory.
@@ -123,7 +122,6 @@ class DatesetDirectory():
             fit_scalers: Whether to fit scalers (False for inference with pre-fitted)
             inference_only: If True, all data goes to test set
             min_timestep: Minimum timestep to include in datasets (e.g., 30 for R_t)
-            max_sims: Maximum number of simulations to include
         """
         # Store min_timestep for use in ProcessedData
         self.min_timestep = min_timestep
@@ -165,13 +163,7 @@ class DatesetDirectory():
         # Change data format in main df
         df_data['date_format'] = pd.to_datetime(df_data['date'])
 
-        self.max_sims = max_sims
-        selected_sims = None
-        if self.max_sims is not None:
-            unique_sims = sorted(df_data['sim'].unique())
-            selected_sims = unique_sims[: int(self.max_sims)]
-            df_data = df_data[df_data['sim'].isin(selected_sims)].copy()
-            print(f"Applying max_sims={self.max_sims}: using {len(selected_sims)} simulations")
+
 
         # Create geographic metadata
         df_data['MSOA'] = df_data['MSOA'].astype(str)

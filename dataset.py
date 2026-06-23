@@ -312,28 +312,27 @@ class DatesetDirectory():
 
     def resolve_sim_idx(self, sim_id):
         """Resolve simulation identifiers coming from numpy/pandas containers."""
+        # 1. Direct match check
         if sim_id in self.sim_id_to_idx:
             return self.sim_id_to_idx[sim_id]
 
-        candidates = []
-        if hasattr(sim_id, "item"):
-            try:
-                candidates.append(sim_id.item())
-            except Exception:
-                pass
+        # 2. Extract native python type if it's a numpy scalar
+        native_val = sim_id.item() if hasattr(sim_id, "item") else sim_id
 
-        candidates.append(str(sim_id))
-
+        # 3. Check native int/float and string variations of the clean value
+        candidates = [native_val, str(native_val)]
+        
         try:
-            candidates.append(int(sim_id))
+            candidates.append(int(native_val))
         except (TypeError, ValueError):
             pass
 
+        # 4. Search matching keys
         for candidate in candidates:
             if candidate in self.sim_id_to_idx:
                 return self.sim_id_to_idx[candidate]
 
-        raise KeyError(sim_id)
+        raise KeyError(f"Could not resolve sim_id {sim_id} (type: {type(sim_id)}). Clean value extracted: {native_val}")
 
     def get_raw_data_split(self):
         """Get raw data with split labels."""

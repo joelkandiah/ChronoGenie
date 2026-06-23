@@ -124,8 +124,22 @@ def compute_scores_torch(forecast_sample, y, alpha=0.05, score_type="all", weigh
     if forecast_sample.dim() < 3:
         raise ValueError("forecast_sample must have at least 3 dimensions: [S, ..., T, M]")
 
-    lower = torch.quantile(forecast_sample, 0.05, dim=0)
-    upper = torch.quantile(forecast_sample, 0.95, dim=0)
+    # Add this to see what shapes get unpacked inside the scoring file:
+    print("\n" + "-"*40)
+    print("SCORING CORE DIAGNOSTIC:")
+    print(f"Received forecast_sample shape: {forecast_sample.shape}")
+    print(f"Received ground truth y shape:   {y.shape}")
+    
+    # Calculate intervals (assuming sample dimension is handled here)
+    # Let's inspect lower/upper calculation shapes:
+    lower = torch.quantile(forecast_sample, alpha / 2, dim=2) # checking if dim=2 is right
+    upper = torch.quantile(forecast_sample, 1 - alpha / 2, dim=2)
+    
+    print(f"Calculated interval lower bound shape: {lower.shape}")
+    print(f"Calculated interval upper bound shape: {upper.shape}")
+    print(f"Target 'y' shape for subtraction:      {y.shape}")
+    print("-"*40 + "\n")
+    
     interval_score = interval_score_torch(y, lower, upper, alpha=alpha)
 
     crps = crps_torch(y, forecast_sample)

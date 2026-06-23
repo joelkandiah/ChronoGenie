@@ -297,6 +297,19 @@ class DatesetDirectory():
             self.sim_id_to_idx[sim] = i
             self.sim_id_to_idx[str(sim)] = i
 
+        # Convert all data to [num_vars, sim, gid, tid] tensors
+        # These will be shared by all ProcessedData instances
+        self.data_tensor = torch.stack([torch.from_numpy(xr.values).float() for xr in self.list_xr_data])
+        self.raw_data_tensor = torch.stack([torch.from_numpy(xr.values).float() for xr in self.raw_list_xr_data])
+        
+        # Pre-convert static features [gid, static_features] -> [num_geographies, num_static_features]
+        self.static_features_tensor = torch.from_numpy(self.xr_static_features_scaled.values).float()
+
+        print("Data loaded and pre-processed.")
+        print(f"Data split into training ({self.split[0]} instances), "
+              f"testing ({self.split[1]} instances), "
+              f"validation ({self.split[2]} instances)...")
+
     def resolve_sim_idx(self, sim_id):
         """Resolve simulation identifiers coming from numpy/pandas containers."""
         if sim_id in self.sim_id_to_idx:
@@ -321,19 +334,6 @@ class DatesetDirectory():
                 return self.sim_id_to_idx[candidate]
 
         raise KeyError(sim_id)
-        
-        # Convert all data to [num_vars, sim, gid, tid] tensors
-        # These will be shared by all ProcessedData instances
-        self.data_tensor = torch.stack([torch.from_numpy(xr.values).float() for xr in self.list_xr_data])
-        self.raw_data_tensor = torch.stack([torch.from_numpy(xr.values).float() for xr in self.raw_list_xr_data])
-        
-        # Pre-convert static features [gid, static_features] -> [num_geographies, num_static_features]
-        self.static_features_tensor = torch.from_numpy(self.xr_static_features_scaled.values).float()
-
-        print("Data loaded and pre-processed.")
-        print(f"Data split into training ({self.split[0]} instances), "
-              f"testing ({self.split[1]} instances), "
-              f"validation ({self.split[2]} instances)...")
 
     def get_raw_data_split(self):
         """Get raw data with split labels."""
@@ -398,7 +398,12 @@ class ProcessedData(Dataset):
         self.static_features_tensor = data_directory.static_features_tensor
 
         # DOW mapping: sim_id -> start_dow
-        self.sim_to_start_dow = self.df_start_time_metadata.set_index('sim')['dow'].to_dict()
+        raw_dow_dict = self.df_start_time_metadata.set_index('sim')['dow'].to_dict()
+        self.sim_to_start_dow = {}
+        for k, v in raw_dow_dict.items():
+            self.sim_to_start_dow[k] = v
+            self.sim_to_start_dow[int(k)] = v
+            self.sim_to_start_dow[str(k)] = v
 
         # Number of geographies (M)
         self.num_geographies = data_directory.num_geographies
@@ -455,13 +460,14 @@ class ProcessedData(Dataset):
         """
         # Calculate which simulation and timestep this index corresponds to
         sim_id = self.sims[idx // self.valid_timesteps]
-        sim_idx = self.resolve_sim_idx(sim_id)
+        sim_idx = self.data_directory.resolve_sim_idx(sim_id)
         
         # current_t starts from min_timestep, not 0
         current_t = (idx % self.valid_timesteps) + self.min_timestep
         
         # Calculate day of week
-        start_dow_sim = self.sim_to_start_dow[sim_id]
+        resolved_sim_id = self.data_directory.all_sims[sim_idx]
+        start_dow_sim = self.sim_to_start_dow[resolved_sim_id]
         current_dow = (start_dow_sim + current_t) % 7
 
         # Build context values [M, context_size]

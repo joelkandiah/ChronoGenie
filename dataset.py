@@ -250,6 +250,7 @@ class DatesetDirectory():
             if split[2] == 0:
                 raise ValueError(f"split leads to an empty validation set.")
         self.split = split
+        self.inference_only = inference_only 
 
         # Split simulations into training, testing, validation
         np.random.seed(42)

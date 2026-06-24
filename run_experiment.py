@@ -259,8 +259,18 @@ def run_experiment(cfg: ExperimentConfig) -> None:
         chronos_model_source = cfg.chronos_model_id
 
     temporal_model = ChronosTemporalAdapter(model_id=chronos_model_source, device=cfg.device)
+    # Check if inference_only exists on the object
+    if not hasattr(dataset_directory, "inference_only"):
+        import warnings
+        warnings.warn(
+            "'inference_only' attribute was not found on the DatesetDirectory object! "
+            "Falling back to False unless this is a transfer/inference-only run.",
+            UserWarning
+        )
+    # Use getattr with a default value of False if the attribute doesn't exist
+    inference_only = getattr(dataset_directory, "inference_only", False) or (cfg.transfer_from is not None)
 
-    if cfg.mode in ["train", "both"] and not dataset_directory.inference_only:
+    if cfg.mode in ["train", "both"] and not inference_only:
         print("###############")
         print("# FINE-TUNING #")
         print("###############")

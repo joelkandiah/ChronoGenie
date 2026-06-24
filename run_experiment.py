@@ -258,7 +258,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
         print(f"--> No checkpoint found. Loading base model: {cfg.chronos_model_id}")
         chronos_model_source = cfg.chronos_model_id
 
-    temporal_model = ChronosTemporalAdapter(model_id=chronos_model_source, device=cfg.device)
+    temporal_model = ChronosTemporalAdapter(model_id=chronos_model_source, device=cfg.device).to(cfg.device)
     # Check if inference_only exists on the object
     if not hasattr(dataset_directory, "inference_only"):
         import warnings

@@ -1,4 +1,4 @@
-name: GENIE
+name: ChronoGenie
 channels:
   - conda-forge
 dependencies:
@@ -24,8 +24,12 @@ dependencies:
           - matplotlib
           - seaborn
           - torch-lr-finder
-          - -e ./chronos-forecasting
           - git+https://github.com/facebookresearch/flow_matching.git
           - git+https://github.com/KellerJordan/Muon
           - zuko
+          - peft
+          - accelerate
+          - transformers
+          - packaging
+          - -e ./chronos-forecasting
    

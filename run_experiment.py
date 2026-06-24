@@ -225,6 +225,17 @@ def build_chronos_training_inputs(cfg: ExperimentConfig, dataset_directory: Date
         series.append(packed)
     return series
 
+def build_chronos_validation_inputs(cfg: ExperimentConfig, dataset_directory: DatesetDirectory) -> List[torch.Tensor]:
+    ctx_col_indices = [dataset_directory.columns_with_data.index(c) for c in cfg.columns_for_context]
+    series = []
+    # Assuming dataset_directory has a 'val_sims' attribute similar to train_sims
+    val_sims = getattr(dataset_directory, "val_sims", [])
+    for sim_id in val_sims:
+        sim_idx = dataset_directory.resolve_sim_idx(sim_id)
+        history_tensors = [dataset_directory.raw_data_tensor[idx, sim_idx] for idx in ctx_col_indices]
+        packed = pack_chronos_input(history_tensors, dataset_directory.static_features_tensor)
+        series.append(packed)
+    return series
 
 def run_experiment(cfg: ExperimentConfig) -> None:
     print("#" * 80)
@@ -246,6 +257,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
         print("###############")
 
         train_inputs = build_chronos_training_inputs(cfg, dataset_directory)
+        val_inputs = build_chronos_validation_inputs(cfg, dataset_directory)
         pred_type_by_name = dict(zip(dataset_directory.columns_for_prediction, dataset_directory.prediction_distribution_types))
         count_context_count = sum(
             1 for c in cfg.columns_for_context if pred_type_by_name.get(c, "lognormal").lower() != "lognormal"
@@ -253,6 +265,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
 
         temporal_model.fine_tune(
             inputs=train_inputs,
+            validation_inputs=val_inputs if len(val_inputs) > 0 else None,
             prediction_length=max(cfg.autoregressive_windows),
             finetune_mode=cfg.chronos_finetune_mode,
             learning_rate=cfg.chronos_finetune_lr,
@@ -264,6 +277,10 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             count_row_count=dataset_directory.num_geographies * count_context_count,
             count_noise_low=cfg.count_noise_low,
             count_noise_high=cfg.count_noise_high,
+            logging_steps=10,
+            eval_steps=50,
+            report_to="stdout",
+            disable_tqdm=False,
         )
 
     if cfg.mode in ["test", "both"] or cfg.mode == "train":

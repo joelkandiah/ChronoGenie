@@ -156,9 +156,9 @@ def get_sliding_window_predictions(
 
             # Spatial scoring structures
             # 1. Make sure it is initialized to hold the full sequence of steps for this window
-            es_scores_win = torch.zeros(num_steps_to_predict, num_prediction, device=device)
-            vario_scores_win = torch.zeros(num_steps_to_predict, num_prediction, device=device)
-
+            # Use 1 because prediction_length=1
+            es_scores_win = torch.zeros(1, num_prediction, device=device)
+            vario_scores_win = torch.zeros(1, num_prediction, device=device)
             for v in range(num_prediction):
                 es_scores_win[:, v] = energy_score_torch(truth_win[:, :, v], samples_win[:, :, :, v])
                 vario_scores_win[:, v] = variogram_torch(truth_win[:, :, v], samples_win[:, :, :, v], p=0.5)

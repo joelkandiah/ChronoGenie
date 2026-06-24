@@ -12,7 +12,7 @@ columns:
   context: ["daily_hospitalised", "deaths"]
 
 execution:
-  mode: "train"
+  mode: "test"
   device: "cuda"
 
 context:

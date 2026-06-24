@@ -1,5 +1,5 @@
 experiment:
-  name: "CHRONOS2_SMOKE_TEST"
+  name: "CHRONOS2_SMOKE_TEST_ONLY"
   description: "Fast smoke test for Chronos-only pipeline"
 
 data_source: "configs/data/1K_june.yaml"

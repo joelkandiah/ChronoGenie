@@ -298,7 +298,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             count_noise_high=cfg.count_noise_high,
             logging_steps=10,
             eval_steps=50,
-            report_to="stdout",
+            report_to="none",
             disable_tqdm=False,
         )
 

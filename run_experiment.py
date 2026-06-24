@@ -248,7 +248,16 @@ def run_experiment(cfg: ExperimentConfig) -> None:
 
     dataset_directory = build_dataset_directory(cfg)
 
-    chronos_model_source = cfg.load_checkpoints_from or cfg.chronos_model_id
+    # Check if a fine-tuned adapter exists in the output directory from a previous run
+    if cfg.load_checkpoints_from:
+        chronos_model_source = cfg.load_checkpoints_from
+    elif os.path.exists(os.path.join(cfg.output_dir, "adapter_config.json")):
+        print(f"--> Found existing fine-tuned checkpoint in {cfg.output_dir}. Resuming/Testing from this directory.")
+        chronos_model_source = cfg.output_dir
+    else:
+        print(f"--> No checkpoint found. Loading base model: {cfg.chronos_model_id}")
+        chronos_model_source = cfg.chronos_model_id
+
     temporal_model = ChronosTemporalAdapter(model_id=chronos_model_source, device=cfg.device)
 
     if cfg.mode in ["train", "both"] and not dataset_directory.inference_only:
@@ -283,7 +292,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             disable_tqdm=False,
         )
 
-    if cfg.mode in ["test", "both"] or cfg.mode == "train":
+    if cfg.mode in ["test", "both"]:
         print("###########")
         print("# TESTING #")
         print("###########")

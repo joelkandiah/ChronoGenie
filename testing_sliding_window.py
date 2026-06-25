@@ -177,6 +177,13 @@ def get_sliding_window_predictions(
             truth_win_log = torch.log1p(truth_win)         # [1, 84, 2] -> (Time, Nodes, Burdens)
             samples_win_log = torch.log1p(samples_win)     # [1, 20, 84, 2] (Time, Samples, Nodes, Burdens)
 
+            # Native Scoring metrics
+            quantiles_log = torch.quantile(samples_win_log, q_indices, dim=1) # [5, 1, M, V]
+            preds_lower_95_log = quantiles_log[1][0]
+            preds_upper_95_log = quantiles_log[2][0]
+            preds_lower_50_log = quantiles_log[3][0]
+            preds_upper_50_log = quantiles_log[4][0]
+
             is_scores_win_log = interval_score_torch(torch.log1p(truth_win_flat), preds_lower_95_log, preds_upper_95_log)
             crps_scores_win_log = crps_torch(torch.log1p(truth_win_flat), torch.log1p(samples_win_flat))
 

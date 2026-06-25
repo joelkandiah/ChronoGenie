@@ -270,34 +270,34 @@ class LogInterceptor(list):
 
 
 def plot_training_metrics(log_history: List[Dict[str, Any]], output_dir: str) -> None:
-    """Reconstructs and plots historical evaluation metrics from intercepted logs."""
+    """Reconstructs and plots historical evaluation metrics mapped directly to Training Epochs."""
     if not log_history:
         print("--> Warning: No log metrics were intercepted. Skipping metrics plotting.")
         return
 
-    steps = []
+    train_epochs = []
     train_loss = []
     learning_rates = []
     
-    val_steps = []
+    val_epochs = []
     val_loss = []
 
-    # Reconstruct step counts across the iterations if missing
-    current_step = 0
     for log in log_history:
-        # Ignore complete metrics collection at the final step
+        # Skip the summary print at the very end of training
         if "train_runtime" in log:
             continue
             
-        current_step += 1
+        # Safely convert epoch to float if it exists
+        epoch_val = float(log["epoch"]) if "epoch" in log else None
         
-        if "loss" in log:
-            steps.append(current_step)
+        if "loss" in log and epoch_val is not None:
+            train_epochs.append(epoch_val)
             train_loss.append(float(log["loss"]))
             if "learning_rate" in log:
                 learning_rates.append(float(log["learning_rate"]))
-        elif "eval_loss" in log:
-            val_steps.append(current_step)
+                
+        elif "eval_loss" in log and epoch_val is not None:
+            val_epochs.append(epoch_val)
             val_loss.append(float(log["eval_loss"]))
 
     if not train_loss:
@@ -306,24 +306,21 @@ def plot_training_metrics(log_history: List[Dict[str, Any]], output_dir: str) ->
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Panel 1: Loss curves
-    ax1.plot(steps, train_loss, label="Training Loss", color="royalblue", lw=2)
+    # Panel 1: Loss curves plotted directly against Epochs
+    ax1.plot(train_epochs, train_loss, label="Training Loss", color="royalblue", lw=2, marker="o", markersize=4)
     if val_loss:
-        # Match alignment step safely if logs arrive together
-        if len(val_steps) != len(val_loss):
-            val_steps = steps[-len(val_loss):]
-        ax1.plot(val_steps, val_loss, label="Validation Loss", color="crimson", linestyle="--", marker="o", lw=1.5)
-    ax1.set_title("Fine-tuning Loss over History")
-    ax1.set_xlabel("Relative Log Index")
+        ax1.plot(val_epochs, val_loss, label="Validation Loss", color="crimson", linestyle="--", marker="s", markersize=5, lw=1.5)
+    ax1.set_title("Fine-tuning Loss over Epochs")
+    ax1.set_xlabel("Epochs")
     ax1.set_ylabel("Loss")
     ax1.grid(True, linestyle=":", alpha=0.6)
     ax1.legend()
 
-    # Panel 2: Learning rate schedules
+    # Panel 2: Learning rate schedules plotted directly against Epochs
     if learning_rates:
-        ax2.plot(steps, learning_rates, label="Learning Rate", color="forestgreen", lw=2)
+        ax2.plot(train_epochs, learning_rates, label="Learning Rate", color="forestgreen", lw=2, marker="o", markersize=4)
         ax2.set_title("Learning Rate Schedule")
-        ax2.set_xlabel("Relative Log Index")
+        ax2.set_xlabel("Epochs")
         ax2.set_ylabel("LR")
         ax2.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
         ax2.grid(True, linestyle=":", alpha=0.6)

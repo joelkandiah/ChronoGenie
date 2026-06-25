@@ -10,6 +10,10 @@ This entrypoint keeps only the direct Chronos-2 workflow:
 
 import argparse
 import os
+import sys
+import io
+import re
+import ast
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -239,63 +243,93 @@ def build_chronos_validation_inputs(cfg: ExperimentConfig, dataset_directory: Da
     return series
 
 
+class LogInterceptor(list):
+    """Custom stream splitter that catches dictionary prints from the stdout stream."""
+    def __init__(self, original_stream):
+        super().__init__()
+        self.original_stream = original_stream
+        self.buffer = ""
+
+    def write(self, text):
+        self.original_stream.write(text)  # Ensure standard printing still occurs
+        self.buffer += text
+        while "\n" in self.buffer:
+            line, self.buffer = self.buffer.split("\n", 1)
+            line = line.strip()
+            # Intercept statements starting with '{' and ending with '}'
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    parsed_dict = ast.literal_eval(line)
+                    if isinstance(parsed_dict, dict):
+                        self.append(parsed_dict)
+                except Exception:
+                    pass
+
+    def flush(self):
+        self.original_stream.flush()
+
+
 def plot_training_metrics(log_history: List[Dict[str, Any]], output_dir: str) -> None:
-    """Parses Hugging Face Trainer log history and creates a Loss & LR plot."""
+    """Reconstructs and plots historical evaluation metrics from intercepted logs."""
     if not log_history:
-        print("--> Warning: No log history found. Skipping metrics plotting.")
+        print("--> Warning: No log metrics were intercepted. Skipping metrics plotting.")
         return
 
-    epochs = []
     steps = []
     train_loss = []
     learning_rates = []
     
-    val_epochs = []
     val_steps = []
     val_loss = []
 
+    # Reconstruct step counts across the iterations if missing
+    current_step = 0
     for log in log_history:
-        # Check for training metric logs
+        # Ignore complete metrics collection at the final step
+        if "train_runtime" in log:
+            continue
+            
+        current_step += 1
+        
         if "loss" in log:
-            steps.append(log.get("step", 0))
-            epochs.append(log.get("epoch", 0.0))
-            train_loss.append(log["loss"])
+            steps.append(current_step)
+            train_loss.append(float(log["loss"]))
             if "learning_rate" in log:
-                learning_rates.append(log["learning_rate"])
-        # Check for validation metric logs
+                learning_rates.append(float(log["learning_rate"]))
         elif "eval_loss" in log:
-            val_steps.append(log.get("step", 0))
-            val_epochs.append(log.get("epoch", 0.0))
-            val_loss.append(log["eval_loss"])
+            val_steps.append(current_step)
+            val_loss.append(float(log["eval_loss"]))
 
-    if not steps:
-        print("--> Warning: Log history did not contain continuous training logs. Skipping plot.")
+    if not train_loss:
+        print("--> Warning: Captured logs did not contain loss metrics. Skipping plot.")
         return
 
-    # Initialize a 2-panel plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
-    # Panel 1: Loss Curve
+    # Panel 1: Loss curves
     ax1.plot(steps, train_loss, label="Training Loss", color="royalblue", lw=2)
     if val_loss:
+        # Match alignment step safely if logs arrive together
+        if len(val_steps) != len(val_loss):
+            val_steps = steps[-len(val_loss):]
         ax1.plot(val_steps, val_loss, label="Validation Loss", color="crimson", linestyle="--", marker="o", lw=1.5)
-    ax1.set_title("Fine-tuning Loss over Steps")
-    ax1.set_xlabel("Training Steps")
+    ax1.set_title("Fine-tuning Loss over History")
+    ax1.set_xlabel("Relative Log Index")
     ax1.set_ylabel("Loss")
     ax1.grid(True, linestyle=":", alpha=0.6)
     ax1.legend()
 
-    # Panel 2: Learning Rate Schedule
+    # Panel 2: Learning rate schedules
     if learning_rates:
         ax2.plot(steps, learning_rates, label="Learning Rate", color="forestgreen", lw=2)
         ax2.set_title("Learning Rate Schedule")
-        ax2.set_xlabel("Training Steps")
+        ax2.set_xlabel("Relative Log Index")
         ax2.set_ylabel("LR")
         ax2.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
         ax2.grid(True, linestyle=":", alpha=0.6)
         ax2.legend()
     else:
-        ax2.text(0.5, 0.5, "Learning Rate data not recorded", ha='center', va='center')
+        ax2.text(0.5, 0.5, "Learning Rate data not found", ha='center', va='center')
 
     plt.tight_layout()
     plot_path = os.path.join(output_dir, "loss_lr_plot.png")
@@ -315,7 +349,6 @@ def run_experiment(cfg: ExperimentConfig) -> None:
 
     dataset_directory = build_dataset_directory(cfg)
 
-    # Check if a fine-tuned adapter exists in the output directory from a previous run
     if cfg.load_checkpoints_from:
         chronos_model_source = cfg.load_checkpoints_from
     elif os.path.exists(os.path.join(cfg.output_dir, "adapter_config.json")):
@@ -326,7 +359,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
         chronos_model_source = cfg.chronos_model_id
 
     temporal_model = ChronosTemporalAdapter(model_id=chronos_model_source, device=cfg.device).to(cfg.device)
-    # Check if inference_only exists on the object
+    
     if not hasattr(dataset_directory, "inference_only"):
         import warnings
         warnings.warn(
@@ -334,7 +367,6 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             "Falling back to False unless this is a transfer/inference-only run.",
             UserWarning
         )
-    # Use getattr with a default value of False if the attribute doesn't exist
     inference_only = getattr(dataset_directory, "inference_only", False) or (cfg.transfer_from is not None)
 
     if cfg.mode in ["train", "both"] and not inference_only:
@@ -349,30 +381,36 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             1 for c in cfg.columns_for_context if pred_type_by_name.get(c, "lognormal").lower() != "lognormal"
         )
 
-        # Catch logs returned by the adapter
-        temporal_model.fine_tune(
-            inputs=train_inputs,
-            validation_inputs=val_inputs if len(val_inputs) > 0 else None,
-            prediction_length=max(cfg.autoregressive_windows),
-            finetune_mode=cfg.chronos_finetune_mode,
-            learning_rate=cfg.chronos_finetune_lr,
-            num_steps=cfg.chronos_finetune_steps,
-            batch_size=cfg.chronos_finetune_batch_size,
-            context_length=cfg.context_size,
-            output_dir=cfg.output_dir,
-            disable_data_parallel=True,
-            count_row_count=dataset_directory.num_geographies * count_context_count,
-            count_noise_low=cfg.count_noise_low,
-            count_noise_high=cfg.count_noise_high,
-            logging_steps=10,
-            eval_steps=50,
-            report_to="none",
-            disable_tqdm=False,
-        )
+        # Set up standard output stream redirection interception
+        interceptor = LogInterceptor(sys.stdout)
+        sys.stdout = interceptor
 
-        # Plot the logs instantly
-        logs = getattr(temporal_model, "run_logs", None)
-        plot_training_metrics(logs, cfg.output_dir)
+        try:
+            temporal_model.fine_tune(
+                inputs=train_inputs,
+                validation_inputs=val_inputs if len(val_inputs) > 0 else None,
+                prediction_length=max(cfg.autoregressive_windows),
+                finetune_mode=cfg.chronos_finetune_mode,
+                learning_rate=cfg.chronos_finetune_lr,
+                num_steps=cfg.chronos_finetune_steps,
+                batch_size=cfg.chronos_finetune_batch_size,
+                context_length=cfg.context_size,
+                output_dir=cfg.output_dir,
+                disable_data_parallel=True,
+                count_row_count=dataset_directory.num_geographies * count_context_count,
+                count_noise_low=cfg.count_noise_low,
+                count_noise_high=cfg.count_noise_high,
+                logging_steps=10,
+                eval_steps=50,
+                report_to="none",
+                disable_tqdm=False,
+            )
+        finally:
+            # Revert stream output safely to standard console
+            sys.stdout = interceptor.original_stream
+
+        # Plot metrics extracted directly from the system print logs
+        plot_training_metrics(interceptor, cfg.output_dir)
 
     if cfg.mode in ["test", "both"]:
         print("###########")

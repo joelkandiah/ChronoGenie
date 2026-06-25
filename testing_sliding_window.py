@@ -163,8 +163,13 @@ def get_sliding_window_predictions(
             es_scores_win = torch.zeros(temporal_dim, num_prediction, device=device)
             vario_scores_win = torch.zeros(temporal_dim, num_prediction, device=device)
             for v in range(num_prediction):
-                es_scores_win[:, v] = energy_score_torch(truth_win[:, :, v], samples_win[:, :, :, v])
-                vario_scores_win[:, v] = variogram_torch(truth_win[:, :, v], samples_win[:, :, :, v], p=0.5)
+                # truth_win[:, :, v] is [Time, MSOA]
+                # samples_win[:, :, :, v] is [Time, Samples, MSOA]
+                target = truth_win[:, :, v].squeeze(0)          # Result: [MSOA]
+                prediction = samples_win[:, :, :, v].squeeze(0) # Result: [Sample, MSOA]
+                
+                es_scores_win[:, v] = energy_score_torch(target, prediction)
+                vario_scores_win[:, v] = variogram_torch(target, prediction, p=0.5)
 
             # Log-scale Transformations
             truth_win_log = torch.log1p(truth_win_flat)
@@ -178,8 +183,12 @@ def get_sliding_window_predictions(
             es_scores_win_log = torch.zeros(temporal_dim, num_prediction, device=device)
             vario_scores_win_log = torch.zeros(temporal_dim, num_prediction, device=device)
             for v in range(num_prediction):
-                es_scores_win_log[:, v] = energy_score_torch(torch.log1p(truth_win[:, :, v]), torch.log1p(samples_win[:, :, :, v]))
-                vario_scores_win_log[:, v] = variogram_torch(torch.log1p(truth_win[:, :, v]), torch.log1p(samples_win[:, :, :, v]), p=0.5)
+                # truth_win[:, :, v] is [Time, MSOA]
+                # samples_win[:, :, :, v] is [Time, Samples, MSOA]
+                target = truth_win[:, :, v].squeeze(0)          # Result: [MSOA]
+                prediction = samples_win[:, :, :, v].squeeze(0) # Result: [Sample, MSOA]
+                es_scores_win_log[:, v] = energy_score_torch(torch.log1p(target), torch.log1p(prediction))
+                vario_scores_win_log[:, v] = variogram_torch(torch.log1p(target), torch.log1p(prediction), p=0.5)
 
             # Unified stack arrays
             tmv_stack = torch.stack([

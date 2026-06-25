@@ -151,14 +151,17 @@ def get_sliding_window_predictions(
             truth_win_flat = truth_win[0]
             samples_win_flat = samples_win[0]
 
+            print(f"DEBUG: truth_win shape: {truth_win.shape}")
+            print(f"DEBUG: samples_win shape: {samples_win.shape}")
+
             is_scores_win = interval_score_torch(truth_win_flat, preds_lower_95, preds_upper_95)
             crps_scores_win = crps_torch(truth_win_flat, samples_win_flat)
 
+            temporal_dim = truth_win.shape[0]
+
             # Spatial scoring structures
-            # 1. Make sure it is initialized to hold the full sequence of steps for this window
-            # Use 1 because prediction_length=1
-            es_scores_win = torch.zeros(1, num_prediction, device=device)
-            vario_scores_win = torch.zeros(1, num_prediction, device=device)
+            es_scores_win = torch.zeros(temporal_dim, num_prediction, device=device)
+            vario_scores_win = torch.zeros(temporal_dim, num_prediction, device=device)
             for v in range(num_prediction):
                 es_scores_win[:, v] = energy_score_torch(truth_win[:, :, v], samples_win[:, :, :, v])
                 vario_scores_win[:, v] = variogram_torch(truth_win[:, :, v], samples_win[:, :, :, v], p=0.5)
@@ -172,11 +175,11 @@ def get_sliding_window_predictions(
             is_scores_win_log = interval_score_torch(truth_win_log, preds_lower_95_log, preds_upper_95_log)
             crps_scores_win_log = crps_torch(truth_win_log, samples_win_log)
 
-            es_scores_win_log = torch.zeros(1, num_prediction, device=device)
-            vario_scores_win_log = torch.zeros(1, num_prediction, device=device)
+            es_scores_win_log = torch.zeros(temporal_dim, num_prediction, device=device)
+            vario_scores_win_log = torch.zeros(temporal_dim, num_prediction, device=device)
             for v in range(num_prediction):
-                es_scores_win_log[0, v] = energy_score_torch(torch.log1p(truth_win[:, :, v]), torch.log1p(samples_win[:, :, :, v]))
-                vario_scores_win_log[0, v] = variogram_torch(torch.log1p(truth_win[:, :, v]), torch.log1p(samples_win[:, :, :, v]), p=0.5)
+                es_scores_win_log[:, v] = energy_score_torch(torch.log1p(truth_win[:, :, v]), torch.log1p(samples_win[:, :, :, v]))
+                vario_scores_win_log[:, v] = variogram_torch(torch.log1p(truth_win[:, :, v]), torch.log1p(samples_win[:, :, :, v]), p=0.5)
 
             # Unified stack arrays
             tmv_stack = torch.stack([

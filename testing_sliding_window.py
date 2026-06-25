@@ -174,19 +174,19 @@ def get_sliding_window_predictions(
                 vario_scores_win[:, v] = variogram_torch(target, prediction, p=0.5)
 
             # Log-scale Transformations
-            truth_win_log = torch.log1p(truth_win_flat)
-            preds_lower_95_log = torch.log1p(preds_lower_95)
-            preds_upper_95_log = torch.log1p(preds_upper_95)
-            samples_win_log = torch.log1p(samples_win_flat)
+            truth_win_log = torch.log1p(truth_win)         # [1, 84, 2] -> (Time, Nodes, Burdens)
+            samples_win_log = torch.log1p(samples_win)     # [1, 20, 84, 2] (Time, Samples, Nodes, Burdens)
 
-            is_scores_win_log = interval_score_torch(truth_win_log, preds_lower_95_log, preds_upper_95_log)
-            crps_scores_win_log = crps_torch(truth_win_log, samples_win_log)
+            is_scores_win_log = interval_score_torch(torch.log1p(truth_win_flat), preds_lower_95_log, preds_upper_95_log)
+            crps_scores_win_log = crps_torch(torch.log1p(truth_win_flat), torch.log1p(samples_win_flat))
 
             es_scores_win_log = torch.zeros(temporal_dim, num_prediction, device=device)
             vario_scores_win_log = torch.zeros(temporal_dim, num_prediction, device=device)
+
             for v in range(num_prediction):
-                target_log = truth_win_log[:, :, v]
-                prediction_log = samples_win_log[:, :, :, v].permute(1, 0, 2)
+                # slice directly from the 3D log tensors
+                target_log = truth_win_log[:, :, v]                       # [1, 84] -> [T, M]
+                prediction_log = samples_win_log[:, :, :, v].permute(1, 0, 2) # [20, 1, 84] -> [S, T, M]
                 
                 es_scores_win_log[:, v] = energy_score_torch(target_log, prediction_log)
                 vario_scores_win_log[:, v] = variogram_torch(target_log, prediction_log, p=0.5)

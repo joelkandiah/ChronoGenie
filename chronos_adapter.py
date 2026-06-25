@@ -161,6 +161,17 @@ class ChronosTemporalAdapter:
                 ]
 
         self.pipeline = self.pipeline.fit(*args, **kwargs)
+        # Save logs to an attribute instead of returning them!
+        self.run_logs = None
+        if hasattr(self.pipeline, "trainer") and hasattr(self.pipeline.trainer, "state"):
+            self.run_logs = self.pipeline.trainer.state.log_history
+            if self.run_logs is not None:
+                print(f"[ChronosTemporalAdapter] Saved {len(self.run_logs)} log entries")
+            else:
+                print("[ChronosTemporalAdapter] Warning: No log history available")
+        else:
+            print("[ChronosTemporalAdapter] Warning: trainer or state not found")
+            
         return self
 
     def predict_quantiles(self, *args, **kwargs):

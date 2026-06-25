@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import torch
 import yaml
+import matplotlib.pyplot as plt
 
 from chronos_adapter import ChronosTemporalAdapter, pack_chronos_input
 from dataset import DatesetDirectory
@@ -225,10 +226,10 @@ def build_chronos_training_inputs(cfg: ExperimentConfig, dataset_directory: Date
         series.append(packed)
     return series
 
+
 def build_chronos_validation_inputs(cfg: ExperimentConfig, dataset_directory: DatesetDirectory) -> List[torch.Tensor]:
     ctx_col_indices = [dataset_directory.columns_with_data.index(c) for c in cfg.columns_for_context]
     series = []
-    # Assuming dataset_directory has a 'val_sims' attribute similar to train_sims
     val_sims = getattr(dataset_directory, "val_sims", [])
     for sim_id in val_sims:
         sim_idx = dataset_directory.resolve_sim_idx(sim_id)
@@ -236,6 +237,72 @@ def build_chronos_validation_inputs(cfg: ExperimentConfig, dataset_directory: Da
         packed = pack_chronos_input(history_tensors, dataset_directory.static_features_tensor)
         series.append(packed)
     return series
+
+
+def plot_training_metrics(log_history: List[Dict[str, Any]], output_dir: str) -> None:
+    """Parses Hugging Face Trainer log history and creates a Loss & LR plot."""
+    if not log_history:
+        print("--> Warning: No log history found. Skipping metrics plotting.")
+        return
+
+    epochs = []
+    steps = []
+    train_loss = []
+    learning_rates = []
+    
+    val_epochs = []
+    val_steps = []
+    val_loss = []
+
+    for log in log_history:
+        # Check for training metric logs
+        if "loss" in log:
+            steps.append(log.get("step", 0))
+            epochs.append(log.get("epoch", 0.0))
+            train_loss.append(log["loss"])
+            if "learning_rate" in log:
+                learning_rates.append(log["learning_rate"])
+        # Check for validation metric logs
+        elif "eval_loss" in log:
+            val_steps.append(log.get("step", 0))
+            val_epochs.append(log.get("epoch", 0.0))
+            val_loss.append(log["eval_loss"])
+
+    if not steps:
+        print("--> Warning: Log history did not contain continuous training logs. Skipping plot.")
+        return
+
+    # Initialize a 2-panel plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Panel 1: Loss Curve
+    ax1.plot(steps, train_loss, label="Training Loss", color="royalblue", lw=2)
+    if val_loss:
+        ax1.plot(val_steps, val_loss, label="Validation Loss", color="crimson", linestyle="--", marker="o", lw=1.5)
+    ax1.set_title("Fine-tuning Loss over Steps")
+    ax1.set_xlabel("Training Steps")
+    ax1.set_ylabel("Loss")
+    ax1.grid(True, linestyle=":", alpha=0.6)
+    ax1.legend()
+
+    # Panel 2: Learning Rate Schedule
+    if learning_rates:
+        ax2.plot(steps, learning_rates, label="Learning Rate", color="forestgreen", lw=2)
+        ax2.set_title("Learning Rate Schedule")
+        ax2.set_xlabel("Training Steps")
+        ax2.set_ylabel("LR")
+        ax2.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
+        ax2.grid(True, linestyle=":", alpha=0.6)
+        ax2.legend()
+    else:
+        ax2.text(0.5, 0.5, "Learning Rate data not recorded", ha='center', va='center')
+
+    plt.tight_layout()
+    plot_path = os.path.join(output_dir, "loss_lr_plot.png")
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    print(f"--> Successfully generated metrics plot saved to: {plot_path}")
+
 
 def run_experiment(cfg: ExperimentConfig) -> None:
     print("#" * 80)
@@ -282,6 +349,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             1 for c in cfg.columns_for_context if pred_type_by_name.get(c, "lognormal").lower() != "lognormal"
         )
 
+        # Catch logs returned by the adapter
         temporal_model.fine_tune(
             inputs=train_inputs,
             validation_inputs=val_inputs if len(val_inputs) > 0 else None,
@@ -301,6 +369,10 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             report_to="none",
             disable_tqdm=False,
         )
+
+        # Plot the logs instantly
+        logs = getattr(temporal_model, "run_logs", None)
+        plot_training_metrics(logs, cfg.output_dir)
 
     if cfg.mode in ["test", "both"]:
         print("###########")
@@ -326,7 +398,6 @@ def run_experiment(cfg: ExperimentConfig) -> None:
                 num_steps=cfg.num_steps,
                 window_batch_size=cfg.window_batch_size,
             )
-
 
 
 def main() -> None:

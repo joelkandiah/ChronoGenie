@@ -307,6 +307,7 @@ class DatesetDirectory():
         self.raw_data_tensor = torch.stack([torch.from_numpy(xr.values).float() for xr in self.raw_list_xr_data])
         
         # Pre-convert static features [gid, static_features] -> [num_geographies, num_static_features]
+        self.raw_static_features_tensor = torch.from_numpy(self.xr_static_features.values).float()
         self.static_features_tensor = torch.from_numpy(self.xr_static_features_scaled.values).float()
 
         print("Data loaded and pre-processed.")

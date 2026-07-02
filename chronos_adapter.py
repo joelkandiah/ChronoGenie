@@ -4,9 +4,98 @@ from dataclasses import dataclass
 import os
 from typing import Iterable
 
+import numpy as np
 import torch
+from sklearn.neighbors import NearestNeighbors
 
 from chronos.chronos2 import Chronos2Pipeline
+
+# ─── Spatial neighbor configuration ──────────────────────────────────────────
+NUM_SPATIAL_NEIGHBORS = 9
+
+
+def build_neighbor_map(
+    static_features_tensor: torch.Tensor,
+    raw_static_features_tensor: torch.Tensor | None = None,
+    n_neighbors: int = NUM_SPATIAL_NEIGHBORS,
+) -> dict[int, list[int]]:
+    """Build a deterministic neighbor lookup from static feature and geo spaces.
+
+    The original graph-building path combined two independent 9-NN sets: one in
+    the full static feature space and one in geographic coordinate space. This
+    helper reproduces that union deterministically and preserves the order in
+    which neighbours are discovered.
+
+    Args:
+        static_features_tensor: Float tensor of shape ``[M, F]`` used for the
+            feature-space KNN.
+        raw_static_features_tensor: Optional unscaled static features tensor. When
+            provided, the first two columns are used for the geographic KNN.
+        n_neighbors: Exact number of neighbors to return per node (default 9).
+
+    Returns:
+        dict mapping each MSOA node id (``int``, 0-indexed) to a list of neighbor
+        node ids in deterministic proximity order. Self-loops are excluded.
+    """
+    if static_features_tensor.ndim != 2:
+        raise ValueError(f"Expected static_features_tensor with shape [M, F], got {tuple(static_features_tensor.shape)}")
+
+    def _kneighbors(feature_tensor: torch.Tensor, metric: str) -> list[list[int]]:
+        feature_array = feature_tensor.detach().cpu().numpy()
+        if metric == "haversine":
+            if feature_array.shape[1] < 2:
+                raise ValueError("Geographic neighbour search requires at least two columns")
+            feature_array = np.radians(feature_array[:, :2])
+        k = min(n_neighbors + 1, feature_array.shape[0])
+        nbrs = NearestNeighbors(n_neighbors=k, metric=metric).fit(feature_array)
+        _, indices = nbrs.kneighbors(feature_array)
+        return [[int(j) for j in row if int(j) != i][:n_neighbors] for i, row in enumerate(indices)]
+
+    feature_candidates = _kneighbors(static_features_tensor, metric="euclidean")
+    geo_source = raw_static_features_tensor if raw_static_features_tensor is not None else static_features_tensor[:, :2]
+    geo_candidates = _kneighbors(geo_source, metric="haversine" if raw_static_features_tensor is not None else "euclidean")
+
+    neighbor_map: dict[int, list[int]] = {}
+    for i in range(static_features_tensor.shape[0]):
+        neighbors: list[int] = []
+        seen = {i}
+        for candidate in feature_candidates[i] + geo_candidates[i]:
+            if candidate not in seen:
+                neighbors.append(candidate)
+                seen.add(candidate)
+        neighbor_map[i] = neighbors
+
+    return neighbor_map
+
+
+def build_anchor_spatial_input(
+    series_tensors: Iterable[torch.Tensor],
+    anchor_id: int,
+    neighbor_map: dict[int, list[int]],
+) -> torch.Tensor:
+    """Pack one MSOA anchor and its neighbours into a Chronos [V, T] tensor."""
+    series_list = [tensor for tensor in series_tensors]
+    if len(series_list) == 0:
+        raise ValueError("series_tensors is empty")
+
+    history_length = series_list[0].shape[-1]
+    if any(tensor.ndim != 2 for tensor in series_list):
+        raise ValueError("Each series tensor must have shape [M, T]")
+    if any(tensor.shape[-1] != history_length for tensor in series_list):
+        raise ValueError("All series tensors must share the same history length")
+
+    node_ids = [anchor_id] + list(neighbor_map[anchor_id])
+    rows = [series[node_id] for node_id in node_ids for series in series_list]
+    return torch.stack(rows, dim=0)
+
+
+def build_anchor_spatial_inputs(
+    series_tensors: Iterable[torch.Tensor],
+    anchor_ids: Iterable[int],
+    neighbor_map: dict[int, list[int]],
+) -> list[torch.Tensor]:
+    """Build one Chronos input tensor per MSOA anchor."""
+    return [build_anchor_spatial_input(series_tensors, anchor_id, neighbor_map) for anchor_id in anchor_ids]
 
 
 def _repeat_static_rows(static_features: torch.Tensor, history_length: int) -> torch.Tensor:
@@ -19,7 +108,7 @@ def _repeat_static_rows(static_features: torch.Tensor, history_length: int) -> t
 
 def pack_chronos_input(
     series_tensors: Iterable[torch.Tensor],
-    static_features: torch.Tensor,
+    static_features: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Pack direct Chronos inputs as a multivariate tensor [V, T]."""
     series_list = [tensor for tensor in series_tensors]
@@ -33,6 +122,9 @@ def pack_chronos_input(
         raise ValueError("All series tensors must share the same history length")
 
     stacked = torch.cat(series_list, dim=0)
+    if static_features is None:
+        return stacked
+
     static_rows = _repeat_static_rows(static_features, history_length)
     return torch.cat([stacked, static_rows], dim=0)
 
@@ -153,12 +245,22 @@ class ChronosTemporalAdapter:
         if count_row_count is not None and "inputs" in kwargs:
             inputs = kwargs["inputs"]
             if isinstance(inputs, list):
-                kwargs["inputs"] = [
-                    add_count_smoothing_noise(tensor, count_row_count, count_noise_low, count_noise_high)
-                    if isinstance(tensor, torch.Tensor)
-                    else tensor
-                    for tensor in inputs
-                ]
+                if isinstance(count_row_count, (list, tuple)):
+                    if len(count_row_count) != len(inputs):
+                        raise ValueError("count_row_count must match the number of training inputs")
+                    kwargs["inputs"] = [
+                        add_count_smoothing_noise(tensor, row_count, count_noise_low, count_noise_high)
+                        if isinstance(tensor, torch.Tensor)
+                        else tensor
+                        for tensor, row_count in zip(inputs, count_row_count)
+                    ]
+                else:
+                    kwargs["inputs"] = [
+                        add_count_smoothing_noise(tensor, count_row_count, count_noise_low, count_noise_high)
+                        if isinstance(tensor, torch.Tensor)
+                        else tensor
+                        for tensor in inputs
+                    ]
 
         self.pipeline = self.pipeline.fit(*args, **kwargs)
         # Save logs to an attribute instead of returning them!

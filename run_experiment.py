@@ -23,7 +23,7 @@ import torch
 import yaml
 import matplotlib.pyplot as plt
 
-from chronos_adapter import ChronosTemporalAdapter, pack_chronos_input
+from chronos_adapter import ChronosTemporalAdapter, build_anchor_spatial_input, build_neighbor_map
 from dataset import DatesetDirectory
 from testing import test
 
@@ -220,27 +220,47 @@ def build_dataset_directory(cfg: ExperimentConfig) -> DatesetDirectory:
     )
 
 
-def build_chronos_training_inputs(cfg: ExperimentConfig, dataset_directory: DatesetDirectory) -> List[torch.Tensor]:
+def _build_spatial_inputs_for_sims(
+    cfg: ExperimentConfig,
+    dataset_directory: DatesetDirectory,
+    sim_ids,
+    neighbor_map: dict[int, list[int]],
+) -> tuple[List[torch.Tensor], List[int]]:
     ctx_col_indices = [dataset_directory.columns_with_data.index(c) for c in cfg.columns_for_context]
-    series = []
-    for sim_id in dataset_directory.train_sims:
+    pred_type_by_name = dict(zip(dataset_directory.columns_for_prediction, dataset_directory.prediction_distribution_types))
+    count_context_count = sum(
+        1 for c in cfg.columns_for_context if pred_type_by_name.get(c, "lognormal").lower() != "lognormal"
+    )
+
+    series: List[torch.Tensor] = []
+    count_row_counts: List[int] = []
+
+    for sim_id in sim_ids:
         sim_idx = dataset_directory.resolve_sim_idx(sim_id)
         history_tensors = [dataset_directory.raw_data_tensor[idx, sim_idx] for idx in ctx_col_indices]
-        packed = pack_chronos_input(history_tensors, dataset_directory.static_features_tensor)
-        series.append(packed)
-    return series
+        for anchor_id in range(dataset_directory.num_geographies):
+            packed = build_anchor_spatial_input(history_tensors, anchor_id, neighbor_map)
+            series.append(packed)
+            count_row_counts.append((1 + len(neighbor_map[anchor_id])) * count_context_count)
+
+    return series, count_row_counts
 
 
-def build_chronos_validation_inputs(cfg: ExperimentConfig, dataset_directory: DatesetDirectory) -> List[torch.Tensor]:
-    ctx_col_indices = [dataset_directory.columns_with_data.index(c) for c in cfg.columns_for_context]
-    series = []
+def build_chronos_training_inputs(
+    cfg: ExperimentConfig,
+    dataset_directory: DatesetDirectory,
+    neighbor_map: dict[int, list[int]],
+) -> tuple[List[torch.Tensor], List[int]]:
+    return _build_spatial_inputs_for_sims(cfg, dataset_directory, dataset_directory.train_sims, neighbor_map)
+
+
+def build_chronos_validation_inputs(
+    cfg: ExperimentConfig,
+    dataset_directory: DatesetDirectory,
+    neighbor_map: dict[int, list[int]],
+) -> tuple[List[torch.Tensor], List[int]]:
     val_sims = getattr(dataset_directory, "val_sims", [])
-    for sim_id in val_sims:
-        sim_idx = dataset_directory.resolve_sim_idx(sim_id)
-        history_tensors = [dataset_directory.raw_data_tensor[idx, sim_idx] for idx in ctx_col_indices]
-        packed = pack_chronos_input(history_tensors, dataset_directory.static_features_tensor)
-        series.append(packed)
-    return series
+    return _build_spatial_inputs_for_sims(cfg, dataset_directory, val_sims, neighbor_map)
 
 
 class LogInterceptor(list):
@@ -345,6 +365,10 @@ def run_experiment(cfg: ExperimentConfig) -> None:
     os.makedirs(cfg.output_dir, exist_ok=True)
 
     dataset_directory = build_dataset_directory(cfg)
+    neighbor_map = build_neighbor_map(
+        dataset_directory.static_features_tensor,
+        raw_static_features_tensor=dataset_directory.raw_static_features_tensor,
+    )
 
     if cfg.load_checkpoints_from:
         chronos_model_source = cfg.load_checkpoints_from
@@ -371,12 +395,8 @@ def run_experiment(cfg: ExperimentConfig) -> None:
         print("# FINE-TUNING #")
         print("###############")
 
-        train_inputs = build_chronos_training_inputs(cfg, dataset_directory)
-        val_inputs = build_chronos_validation_inputs(cfg, dataset_directory)
-        pred_type_by_name = dict(zip(dataset_directory.columns_for_prediction, dataset_directory.prediction_distribution_types))
-        count_context_count = sum(
-            1 for c in cfg.columns_for_context if pred_type_by_name.get(c, "lognormal").lower() != "lognormal"
-        )
+        train_inputs, train_count_row_counts = build_chronos_training_inputs(cfg, dataset_directory, neighbor_map)
+        val_inputs, _ = build_chronos_validation_inputs(cfg, dataset_directory, neighbor_map)
 
         # Set up standard output stream redirection interception
         interceptor = LogInterceptor(sys.stdout)
@@ -386,7 +406,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
             temporal_model.fine_tune(
                 inputs=train_inputs,
                 validation_inputs=val_inputs if len(val_inputs) > 0 else None,
-                prediction_length=max(cfg.autoregressive_windows),
+                prediction_length=1,
                 finetune_mode=cfg.chronos_finetune_mode,
                 learning_rate=cfg.chronos_finetune_lr,
                 num_steps=cfg.chronos_finetune_steps,
@@ -394,7 +414,7 @@ def run_experiment(cfg: ExperimentConfig) -> None:
                 context_length=cfg.context_size,
                 output_dir=cfg.output_dir,
                 disable_data_parallel=True,
-                count_row_count=dataset_directory.num_geographies * count_context_count,
+                count_row_count=train_count_row_counts,
                 count_noise_low=cfg.count_noise_low,
                 count_noise_high=cfg.count_noise_high,
                 logging_steps=10,

@@ -117,33 +117,35 @@ def get_sliding_window_predictions(
     print(f"[TESTING] Neighbour map ready. MSOA-0 neighbours: {neighbor_map[0]}")
 
     num_time_steps = dataset_directory.num_time_steps
-    window_times_seconds = []
 
-    # 3. Autoregressive loop -- run forecast from each initiation day t_init
-    for t_init in range(from_index, num_time_steps):
-        t_init_start_time = time.time()
-        actual_horizon = min(autoregressive_window_size, num_time_steps - t_init)
-        if actual_horizon <= 0:
-            continue
-
-        print(
-            f"[TESTING] Initiating forecast at t_init={t_init}/{num_time_steps - 1} "
-            f"(horizon={actual_horizon} steps)"
-        )
-
-        # Clone predictions at the start of this forecast run to avoid cross-contamination
-        run_predictions = predictions.clone()
+    # 3. Process one simulation at a time to minimize memory usage
+    for sim_id in dataset_directory.test_sims:
+        sim_idx = dataset_directory.resolve_sim_idx(sim_id)
+        sim_root_folder = os.path.join(output_folder, "TESTING", f"SIM_{sim_id}")
         
-        sim_data_tracker = defaultdict(lambda: defaultdict(dict))
+        window_times_seconds = []
 
-        for step in range(actual_horizon):
-            pred_time_idx = t_init + step
-            context_start = pred_time_idx - context_size
-            context_end   = pred_time_idx
+        for t_init in range(from_index, num_time_steps):
+            t_init_start_time = time.time()
+            actual_horizon = min(autoregressive_window_size, num_time_steps - t_init)
+            if actual_horizon <= 0:
+                continue
 
-            for sim_id in dataset_directory.test_sims:
-                sim_idx = dataset_directory.resolve_sim_idx(sim_id)
-                sim_context = run_predictions[:, sim_idx]
+            print(
+                f"[TESTING] SIM_{sim_id} | Initiating forecast at t_init={t_init}/{num_time_steps - 1} "
+                f"(horizon={actual_horizon} steps)"
+            )
+
+            # Clone predictions for this specific sim forecast run
+            run_predictions = predictions.clone()
+            sim_context = run_predictions[:, sim_idx]
+
+            sim_data_tracker = defaultdict(dict)
+
+            for step in range(actual_horizon):
+                pred_time_idx = t_init + step
+                context_start = pred_time_idx - context_size
+                context_end   = pred_time_idx
 
                 # Accumulators for MSOAs
                 all_samples = [None] * num_msoas
@@ -212,26 +214,23 @@ def get_sliding_window_predictions(
 
                 for m in range(num_msoas):
                     for v_i, col_idx in enumerate(prediction_indices):
-                        run_predictions[col_idx, sim_idx, m, pred_time_idx] = step_feedback[m, v_i]
+                        sim_context[col_idx, m, pred_time_idx] = step_feedback[m, v_i]
 
                 samples_smv = torch.stack(all_samples, dim=1)  # [S, M, V]
                 gt_mv       = torch.stack(all_gt,      dim=0)  # [M, V]
 
-                sim_data_tracker[sim_id][pred_time_idx] = {
+                sim_data_tracker[pred_time_idx] = {
                     "samples": samples_smv,
                     "gt":      gt_mv,
                 }
 
-        window_times_seconds.append(time.time() - t_init_start_time)
+            window_times_seconds.append(time.time() - t_init_start_time)
 
-        # 4. Post-process and serialise feather outputs for this initiation run
-        print(f"[TESTING] Exporting results for t_init={t_init} under {output_folder}...")
-        q_indices = torch.tensor([0.5, 0.025, 0.975, 0.25, 0.75], device=device)
-
-        for sim_id in dataset_directory.test_sims:
-            sim_root_folder = os.path.join(output_folder, "TESTING", f"SIM_{sim_id}")
+            # 4. Post-process and serialise feather outputs for this initiation run immediately
             prediction_folder = os.path.join(sim_root_folder, "predictions", str(t_init))
             os.makedirs(prediction_folder, exist_ok=True)
+
+            q_indices = torch.tensor([0.5, 0.025, 0.975, 0.25, 0.75], device=device)
 
             # We gather the data for all timesteps in this window for serializing
             pred_tbl_list = []
@@ -240,7 +239,7 @@ def get_sliding_window_predictions(
 
             for step_idx in range(actual_horizon):
                 step_pred_time = t_init + step_idx
-                data = sim_data_tracker[sim_id][step_pred_time]
+                data = sim_data_tracker[step_pred_time]
 
                 samples_win = data["samples"].unsqueeze(0)  # [1, S, M, V]
                 truth_win   = data["gt"].unsqueeze(0)       # [1, M, V]
@@ -378,9 +377,7 @@ def get_sliding_window_predictions(
                 compression="lz4",
             )
 
-    # Write overall timing table once at the end
-    for sim_id in dataset_directory.test_sims:
-        sim_root_folder = os.path.join(output_folder, "TESTING", f"SIM_{sim_id}")
+        # Write overall timing table once at the end of each simulation's run
         timing_table = pa.table({"window_times_seconds": pa.array(window_times_seconds)})
         feather.write_feather(
             timing_table,

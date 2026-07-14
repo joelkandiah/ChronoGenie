@@ -89,6 +89,20 @@ def build_anchor_spatial_input(
     return torch.stack(rows, dim=0)
 
 
+def build_anchor_spatial_input_from_stacked(
+    stacked_series: torch.Tensor,
+    anchor_id: int,
+    neighbor_map: dict[int, list[int]],
+) -> torch.Tensor:
+    """Pack one MSOA anchor from a stacked [C, M, T] context tensor."""
+    if stacked_series.ndim != 3:
+        raise ValueError(f"Expected stacked_series with shape [C, M, T], got {tuple(stacked_series.shape)}")
+
+    node_ids = [anchor_id] + list(neighbor_map[anchor_id])
+    packed = stacked_series[:, node_ids, :].permute(1, 0, 2).contiguous()
+    return packed.reshape(-1, stacked_series.shape[-1])
+
+
 def build_anchor_spatial_inputs(
     series_tensors: Iterable[torch.Tensor],
     anchor_ids: Iterable[int],

@@ -22,7 +22,7 @@ import pyarrow as pa
 from pyarrow import feather
 
 from chronos_adapter import (
-    build_anchor_spatial_inputs,
+    build_anchor_spatial_input_from_stacked,
     build_neighbor_map,
     sample_from_quantiles,
     NUM_SPATIAL_NEIGHBORS,
@@ -118,128 +118,152 @@ def get_sliding_window_predictions(
 
     num_time_steps = dataset_directory.num_time_steps
 
+    num_time_steps = dataset_directory.num_time_steps
+
     # 3. Process one simulation at a time to minimize memory usage
     for sim_id in dataset_directory.test_sims:
         sim_idx = dataset_directory.resolve_sim_idx(sim_id)
         sim_root_folder = os.path.join(output_folder, "TESTING", f"SIM_{sim_id}")
         
-        window_times_seconds = []
+        num_t_inits = num_time_steps - from_index
+        # A tensor to hold the independent rolling forecast runs concurrently
+        # shape: [num_t_inits, num_variables, num_msoas, num_time_steps]
+        predictions_sim = predictions[:, sim_idx]
+        run_predictions = predictions_sim.unsqueeze(0).repeat(num_t_inits, 1, 1, 1)
 
-        for t_init in range(from_index, num_time_steps):
-            t_init_start_time = time.time()
-            actual_horizon = min(autoregressive_window_size, num_time_steps - t_init)
-            if actual_horizon <= 0:
-                continue
+        sim_data_tracker = defaultdict(dict)
+        t_init_times = {t: 0.0 for t in range(from_index, num_time_steps)}
+
+        # Loop over the forecast steps (rollout horizon)
+        for step in range(autoregressive_window_size):
+            # Find active initiation days for this step
+            active_t_inits = [t for t in range(from_index, num_time_steps) if t + step < num_time_steps]
+            if not active_t_inits:
+                break
 
             print(
-                f"[TESTING] SIM_{sim_id} | Initiating forecast at t_init={t_init}/{num_time_steps - 1} "
-                f"(horizon={actual_horizon} steps)"
+                f"[TESTING] SIM_{sim_id} | Rollout step {step + 1}/{autoregressive_window_size} "
+                f"({len(active_t_inits)} active forecast runs)"
             )
 
-            # Clone predictions for this specific sim forecast run
-            run_predictions = predictions.clone()
-            sim_context = run_predictions[:, sim_idx]
+            step_start_time = time.time()
 
-            sim_data_tracker = defaultdict(dict)
+            inputs_list = []
+            meta_list = []
 
-            for step in range(actual_horizon):
+            # Build all inputs for active initiation days and geographies
+            for t_init in active_t_inits:
                 pred_time_idx = t_init + step
                 context_start = pred_time_idx - context_size
                 context_end   = pred_time_idx
+                t_init_idx    = t_init - from_index
+                sim_context   = run_predictions[t_init_idx]
 
-                # Accumulators for MSOAs
-                all_samples = [None] * num_msoas
-                all_gt      = [None] * num_msoas
-                step_feedback = torch.empty((num_msoas, num_prediction), device=device)
+                # Build context tensors with zero-padding if context starts before day 0
+                series_tensors = []
+                for idx in context_indices:
+                    var_data = sim_context[idx]  # [M, T]
+                    if context_start >= 0:
+                        context_tensor = var_data[:, context_start:context_end]
+                    else:
+                        num_padding = abs(context_start)
+                        context_tensor = var_data.new_zeros((num_msoas, context_size))
+                        data_part = var_data[:, 0:context_end]
+                        context_tensor[:, num_padding:] = data_part
+                    series_tensors.append(context_tensor)
 
-                for batch_start_m in range(0, num_msoas, window_batch_size):
-                    batch_end_m = min(batch_start_m + window_batch_size, num_msoas)
-                    msoa_batch  = list(range(batch_start_m, batch_end_m))
-
-                    # One variable-width [rows, context_size] tensor per MSOA in this batch
-                    # With zero-padding if context starts before day 0
-                    series_tensors = []
-                    for idx in context_indices:
-                        var_data = sim_context[idx]  # [M, T]
-                        if context_start >= 0:
-                            context_tensor = var_data[:, context_start:context_end]
-                        else:
-                            num_padding = abs(context_start)
-                            context_tensor = var_data.new_zeros((num_msoas, context_size))
-                            data_part = var_data[:, 0:context_end]
-                            context_tensor[:, num_padding:] = data_part
-                        series_tensors.append(context_tensor)
-
-                    inputs = build_anchor_spatial_inputs(
-                        series_tensors=series_tensors,
-                        anchor_ids=msoa_batch,
-                        neighbor_map=neighbor_map,
-                    )
-
-                    with torch.no_grad():
-                        quantiles_list, _ = temporal_model.predict_quantiles(
-                            inputs=inputs,
-                            prediction_length=1,
-                            quantile_levels=quantile_levels,
-                        )
-
-                    for b, m in enumerate(msoa_batch):
-                        q_tensor = quantiles_list[b]  # [10*V, 1, Q]
-                        self_pred_q = q_tensor[pred_pos_in_context]
-                        self_pred_4d = self_pred_q.permute(1, 0, 2).unsqueeze(1)
-
-                        sampled = sample_from_quantiles(
-                            quantile_values=self_pred_4d,
-                            quantile_levels=quantile_levels_t,
-                            num_samples=num_samples,
-                        )
-                        sampled_vals = sampled[:, 0, 0, :]  # [S, V]
-
-                        if count_channel_positions:
-                            sampled_vals[:, count_channel_positions] = torch.floor(
-                                torch.clamp(sampled_vals[:, count_channel_positions], min=0.0)
-                            )
-
-                        icdf_feedback = sampled_vals[0]  # [V]
-                        step_feedback[m] = icdf_feedback
-
-                        gt_vals = ground_truths[prediction_indices, sim_idx, m, pred_time_idx].clone()
-                        if count_channel_positions:
-                            gt_vals[count_channel_positions] = torch.floor(
-                                torch.clamp(gt_vals[count_channel_positions], min=0.0)
-                            )
-
-                        all_samples[m] = sampled_vals
-                        all_gt[m]      = gt_vals
+                stacked_series = torch.stack(series_tensors, dim=0)
 
                 for m in range(num_msoas):
-                    for v_i, col_idx in enumerate(prediction_indices):
-                        sim_context[col_idx, m, pred_time_idx] = step_feedback[m, v_i]
+                    packed = build_anchor_spatial_input_from_stacked(stacked_series, m, neighbor_map)
+                    inputs_list.append(packed)
+                    meta_list.append((t_init, m))
 
-                samples_smv = torch.stack(all_samples, dim=1)  # [S, M, V]
-                gt_mv       = torch.stack(all_gt,      dim=0)  # [M, V]
+            # Batch call temporal_model.predict_quantiles
+            all_quantiles = []
+            for b_start in range(0, len(inputs_list), window_batch_size):
+                b_end = min(b_start + window_batch_size, len(inputs_list))
+                batch_inputs = inputs_list[b_start:b_end]
+                with torch.no_grad():
+                    quantiles_list, _ = temporal_model.predict_quantiles(
+                        inputs=batch_inputs,
+                        prediction_length=1,
+                        quantile_levels=quantile_levels,
+                    )
+                all_quantiles.extend(quantiles_list)
 
-                sim_data_tracker[pred_time_idx] = {
+            # Process outputs and perform feedback
+            step_samples = {t: [None] * num_msoas for t in active_t_inits}
+            step_gt      = {t: [None] * num_msoas for t in active_t_inits}
+
+            for idx, (t_init, m) in enumerate(meta_list):
+                pred_time_idx = t_init + step
+                t_init_idx    = t_init - from_index
+
+                q_tensor = all_quantiles[idx]  # [10*V, 1, Q]
+                self_pred_q = q_tensor[pred_pos_in_context]
+                self_pred_4d = self_pred_q.permute(1, 0, 2).unsqueeze(1)
+
+                sampled = sample_from_quantiles(
+                    quantile_values=self_pred_4d,
+                    quantile_levels=quantile_levels_t,
+                    num_samples=num_samples,
+                )
+                sampled_vals = sampled[:, 0, 0, :]  # [S, V]
+
+                if count_channel_positions:
+                    sampled_vals[:, count_channel_positions] = torch.floor(
+                        torch.clamp(sampled_vals[:, count_channel_positions], min=0.0)
+                    )
+
+                icdf_feedback = sampled_vals[0]  # [V]
+                for v_i, col_idx in enumerate(prediction_indices):
+                    run_predictions[t_init_idx, col_idx, m, pred_time_idx] = icdf_feedback[v_i]
+
+                gt_vals = ground_truths[prediction_indices, sim_idx, m, pred_time_idx].clone()
+                if count_channel_positions:
+                    gt_vals[count_channel_positions] = torch.floor(
+                        torch.clamp(gt_vals[count_channel_positions], min=0.0)
+                    )
+
+                step_samples[t_init][m] = sampled_vals
+                step_gt[t_init][m]      = gt_vals
+
+            # Stack samples and gt for each active t_init
+            for t_init in active_t_inits:
+                samples_smv = torch.stack(step_samples[t_init], dim=1)  # [S, M, V]
+                gt_mv       = torch.stack(step_gt[t_init],      dim=0)  # [M, V]
+
+                sim_data_tracker[t_init][t_init + step] = {
                     "samples": samples_smv,
                     "gt":      gt_mv,
                 }
 
-            window_times_seconds.append(time.time() - t_init_start_time)
+            # Log step timing distributed to active t_inits
+            step_time = time.time() - step_start_time
+            share = step_time / len(active_t_inits)
+            for t in active_t_inits:
+                t_init_times[t] += share
 
-            # 4. Post-process and serialise feather outputs for this initiation run immediately
+        # 4. Post-process and serialise feather outputs for all t_init runs
+        print(f"[TESTING] Exporting results for SIM_{sim_id} under {output_folder}...")
+        q_indices = torch.tensor([0.5, 0.025, 0.975, 0.25, 0.75], device=device)
+
+        for t_init in range(from_index, num_time_steps):
+            actual_horizon = min(autoregressive_window_size, num_time_steps - t_init)
+            if actual_horizon <= 0:
+                continue
+
             prediction_folder = os.path.join(sim_root_folder, "predictions", str(t_init))
             os.makedirs(prediction_folder, exist_ok=True)
 
-            q_indices = torch.tensor([0.5, 0.025, 0.975, 0.25, 0.75], device=device)
-
-            # We gather the data for all timesteps in this window for serializing
             pred_tbl_list = []
             sp_tbl_list = []
             es_tbl_list = defaultdict(list)
 
             for step_idx in range(actual_horizon):
                 step_pred_time = t_init + step_idx
-                data = sim_data_tracker[step_pred_time]
+                data = sim_data_tracker[t_init][step_pred_time]
 
                 samples_win = data["samples"].unsqueeze(0)  # [1, S, M, V]
                 truth_win   = data["gt"].unsqueeze(0)       # [1, M, V]
@@ -378,7 +402,8 @@ def get_sliding_window_predictions(
             )
 
         # Write overall timing table once at the end of each simulation's run
-        timing_table = pa.table({"window_times_seconds": pa.array(window_times_seconds)})
+        window_times_list = [t_init_times[t] for t in sorted(t_init_times.keys())]
+        timing_table = pa.table({"window_times_seconds": pa.array(window_times_list)})
         feather.write_feather(
             timing_table,
             os.path.join(sim_root_folder, "window_times.feather"),

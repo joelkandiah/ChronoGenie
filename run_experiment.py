@@ -240,7 +240,12 @@ def _build_spatial_inputs_for_sims(
         history_tensors = [dataset_directory.raw_data_tensor[idx, sim_idx] for idx in ctx_col_indices]
         for anchor_id in range(dataset_directory.num_geographies):
             packed = build_anchor_spatial_input(history_tensors, anchor_id, neighbor_map)
-            series.append(packed)
+            # Pad the packed input with cfg.context_size zeros on the left along the time dimension
+            padded = torch.cat([
+                torch.zeros((packed.shape[0], cfg.context_size), device=packed.device, dtype=packed.dtype),
+                packed
+            ], dim=1)
+            series.append(padded)
             count_row_counts.append((1 + len(neighbor_map[anchor_id])) * count_context_count)
 
     return series, count_row_counts

@@ -30,7 +30,7 @@ model:
     count_noise_high: 1.0
 
 testing:
-  autoregressive_windows: [7]
+  autoregressive_windows: [60]
   num_samples: 20
   num_steps: 20
   window_batch_size: 4

@@ -1,414 +1,682 @@
 #!/usr/bin/env python3
+"""Autoregressive sliding-window forecasting and scoring for Chronos-2.
+
+Formulation
+-----------
+For a forecast origin ``t0`` the model produces a ``H``-day rolling forecast by
+repeatedly predicting one day ahead and feeding the realisation back in. Each
+input item is a single *anchor* MSOA:
+
+* **targets** -- the anchor's own burden series (all burdens jointly, so the
+  model can use cross-burden structure),
+* **covariates** -- the spatial context selected by the covariate mode
+  (neighbour series, means over neighbours / non-neighbours / all others),
+* optionally a known-future weekday pair.
+
+Only the anchor's target rows are read back; predicted covariate rows do not
+exist, because covariates are never forecast by Chronos-2.
+
+Sample paths
+------------
+Uncertainty is represented by ``S`` **independent trajectories**, exactly as in
+the GENIE models. Path ``s`` keeps its own rolling context: at every step it
+draws one inverse-CDF realisation and writes that value back into its own
+history. Scores are then computed over the ``S`` paths.
+
+This matters: drawing ``S`` marginal samples at each step around a *single*
+history would collapse the forecast spread to one-step-ahead uncertainty and
+make long leads look far more certain than they are, and would also destroy the
+cross-MSOA dependence that the energy and variogram scores measure.
+
+Outputs
+-------
+Feather files matching the GENIE layout byte-for-byte in schema, so the
+comparison scripts in ``../GENIE/Plotting`` read both without modification::
+
+    <output_folder>/TESTING/SIM_<id>/predictions/<origin>/predictions.feather
+    <output_folder>/TESTING/SIM_<id>/predictions/<origin>/sample_spaghetti.feather
+    <output_folder>/TESTING/SIM_<id>/predictions/<origin>/spatial_scores.feather
+    <output_folder>/TESTING/SIM_<id>/window_times.feather
 """
-Chronos-only sliding-window autoregressive testing with spatial neighbour context.
 
-Each anchor MSOA is evaluated from a per-step frozen context snapshot. Inputs are
-packed as self + unioned neighbour sequences, with variable row counts allowed per
-anchor because the neighbour sets are the union of feature-space and geographic
-9-NN sets.
+from __future__ import annotations
 
-MSOAs are processed in batches of *window_batch_size* per predict_quantiles call.
-After each 1-step prediction the sampled self-block values are written back into
-the rolling predictions tensor for the next autoregressive step.
-"""
-
+import json
+import logging
 import os
 import time
-from collections import defaultdict
+from dataclasses import dataclass, field
 
 import numpy as np
-import torch
 import pyarrow as pa
+import torch
 from pyarrow import feather
 
-from chronos_adapter import (
-    build_anchor_spatial_input_from_stacked,
-    build_neighbor_map,
-    sample_from_quantiles,
-    NUM_SPATIAL_NEIGHBORS,
-)
+from chronos_adapter import sample_from_quantiles
 from proper_scoring_torch import (
-    interval_score_torch, crps_torch, energy_score_torch, variogram_torch
+    crps_torch,
+    energy_score_torch,
+    interval_score_torch,
+    variogram_torch,
 )
+from spatial_context import SpatialCovariateBuilder, day_of_week_features
+
+logger = logging.getLogger(__name__)
+
+REPORT_QUANTILES = (0.5, 0.025, 0.975, 0.25, 0.75)
+FALLBACK_QUANTILE_LEVELS = [0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99]
 
 
-def get_sliding_window_predictions(
-    temporal_model,
-    interaction_encoder,
-    graph_data,
-    dataset_directory,
-    context_size,
-    autoregressive_window_size,
-    predictions,
-    ground_truths,
-    num_samples,
-    from_index,
-    include_latest_context,
-    num_steps,
-    windows,
-    output_folder,
-    spatial_ablation,
-    spatial_encoder_type,
-    window_batch_size,
-):
-    """Run the autoregressive sliding-window inference loop.
+@dataclass
+class RolloutConfig:
+    """Everything that controls one autoregressive evaluation run."""
 
-    For each of *autoregressive_window_size* daily steps the function:
-      1. Processes all MSOAs in batches of *window_batch_size* (isolated attention).
-      2. For each MSOA batch, stacks self+9-neighbor sequences per MSOA and calls
-         temporal_model.predict_quantiles(prediction_length=1).
-      3. Draws *num_samples* ICDF trajectories; injects path-0 into the rolling
-         context for the next step (true stochastic AR feedback).
-      4. Accumulates samples and ground truth, then serialises feather outputs.
+    context_size: int
+    horizon: int
+    num_samples: int
+    window_batch_size: int = 4
+    predict_row_batch_size: int = 1024
+    ar_step_size: int = 1
+    count_rounding: str = "floor"
+    save_spaghetti: bool = True
+    resume: bool = True
+    seed: int = 26
+
+    def __post_init__(self) -> None:
+        if self.context_size < 1:
+            raise ValueError("context_size must be >= 1")
+        if self.horizon < 1:
+            raise ValueError("horizon must be >= 1")
+        if self.num_samples < 2:
+            raise ValueError("num_samples must be >= 2 for the sample-based scores to be defined")
+        if self.window_batch_size < 1:
+            raise ValueError("window_batch_size must be >= 1")
+        if self.ar_step_size < 1:
+            raise ValueError("ar_step_size must be >= 1")
+        if self.count_rounding not in ("floor", "round", "none"):
+            raise ValueError(f"count_rounding must be 'floor', 'round' or 'none', got '{self.count_rounding}'")
+        if self.ar_step_size > 1:
+            logger.warning(
+                "ar_step_size=%d generates %d days per model call, which is cheaper but draws each "
+                "day in the block from its own marginal quantiles. Within-block temporal dependence "
+                "is lost; use ar_step_size=1 for trajectories comparable with GENIE's.",
+                self.ar_step_size,
+                self.ar_step_size,
+            )
+
+
+@dataclass
+class RolloutStats:
+    """Counters used for progress logging and the run manifest."""
+
+    forward_items: int = 0
+    forward_rows: int = 0
+    predict_seconds: float = 0.0
+    build_seconds: float = 0.0
+    score_seconds: float = 0.0
+    windows_written: int = 0
+    windows_skipped: int = 0
+    per_sim_seconds: dict = field(default_factory=dict)
+
+    def as_dict(self) -> dict:
+        return {
+            "forward_items": self.forward_items,
+            "forward_rows": self.forward_rows,
+            "predict_seconds": round(self.predict_seconds, 2),
+            "build_seconds": round(self.build_seconds, 2),
+            "score_seconds": round(self.score_seconds, 2),
+            "windows_written": self.windows_written,
+            "windows_skipped": self.windows_skipped,
+            "per_sim_seconds": {k: round(v, 2) for k, v in self.per_sim_seconds.items()},
+        }
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+
+def resolve_origins(
+    num_time_steps: int,
+    min_timestep: int,
+    horizon: int,
+    origin_stride: int = 1,
+    max_origins: int | None = None,
+    min_context: int = 1,
+) -> list[int]:
+    """Forecast origins to evaluate.
+
+    An origin ``t0`` forecasts days ``t0 .. t0+H-1`` using days ``< t0`` as history,
+    matching GENIE's sliding windows. Origins with fewer than ``min_context`` days of
+    history are dropped: a foundation model needs at least some history, and unlike
+    the GENIE models we do not fabricate one by zero-padding.
     """
-    del interaction_encoder, graph_data, include_latest_context
-    del spatial_ablation, spatial_encoder_type, num_steps, windows
+    if min_context < 1:
+        raise ValueError("min_context must be >= 1")
 
-    device = (
-        predictions.device
-        if hasattr(predictions, "device")
-        else ("cuda" if torch.cuda.is_available() else "cpu")
+    # The grid is anchored at day 0 so that runs with different min_context still
+    # share window-start ids, which is what the comparison scripts join on.
+    grid = list(range(0, num_time_steps, max(1, origin_stride)))
+    earliest = max(min_timestep, min_context)
+    origins = [t for t in grid if t >= earliest]
+    if max_origins is not None:
+        origins = origins[:max_origins]
+
+    dropped = len(grid) - len([t for t in grid if t >= earliest])
+    if dropped:
+        logger.info(
+            "Skipping %d forecast origin(s) before day %d (min_timestep=%d, min_context=%d).",
+            dropped,
+            earliest,
+            min_timestep,
+            min_context,
+        )
+    truncated = sum(1 for t in origins if t + horizon > num_time_steps)
+    if truncated:
+        logger.info(
+            "%d of %d origins run past the end of the series and are scored on a shortened horizon.",
+            truncated,
+            len(origins),
+        )
+    return origins
+
+
+def window_is_complete(prediction_folder: str, expect_spaghetti: bool) -> bool:
+    """A window counts as done only if every file it should have is on disk."""
+    required = ["predictions.feather", "spatial_scores.feather"]
+    if expect_spaghetti:
+        required.append("sample_spaghetti.feather")
+    return all(os.path.isfile(os.path.join(prediction_folder, name)) for name in required)
+
+
+def _chunks(items: list, size: int) -> list[list]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+def _start_day_of_week(dataset_directory, sim_id) -> int:
+    """Weekday index of day 0 for a simulation, or 0 when the metadata is missing."""
+    metadata = getattr(dataset_directory, "df_start_time_metadata", None)
+    if metadata is None or "dow" not in getattr(metadata, "columns", []):
+        return 0
+    rows = metadata[metadata["sim"] == sim_id]
+    if len(rows) == 0:
+        try:
+            rows = metadata[metadata["sim"] == type(metadata["sim"].iloc[0])(sim_id)]
+        except (ValueError, TypeError, IndexError):
+            return 0
+    return int(rows["dow"].iloc[0]) if len(rows) else 0
+
+
+# ─── Rollout ─────────────────────────────────────────────────────────────────
+
+
+def _predict_step_quantiles(
+    temporal_model,
+    inputs: list[dict],
+    prediction_length: int,
+    quantile_levels: list[float],
+    row_batch_size: int,
+    stats: RolloutStats,
+) -> torch.Tensor:
+    """Run one batched Chronos call. Returns ``[N_items, C, prediction_length, Q]``."""
+    started = time.time()
+    quantiles_list, _ = temporal_model.predict_quantiles(
+        inputs=inputs,
+        prediction_length=prediction_length,
+        quantile_levels=quantile_levels,
+        batch_size=row_batch_size,
+    )
+    stats.predict_seconds += time.time() - started
+    stats.forward_items += len(inputs)
+    stats.forward_rows += sum(int(item["context"].shape[0]) for item in inputs)
+
+    stacked = torch.stack(quantiles_list, dim=0)
+    if stacked.shape[2] != prediction_length or stacked.shape[3] != len(quantile_levels):
+        raise RuntimeError(
+            f"Unexpected Chronos output shape {tuple(stacked.shape)}; expected "
+            f"[N, C, {prediction_length}, {len(quantile_levels)}]"
+        )
+    return stacked
+
+
+def _rollout_origin_batch(
+    temporal_model,
+    covariate_builder: SpatialCovariateBuilder,
+    history: torch.Tensor,
+    origins: list[int],
+    horizons: list[int],
+    config: RolloutConfig,
+    quantile_levels: list[float],
+    count_channels: list[int],
+    start_dow: int | None,
+    generator: torch.Generator,
+    stats: RolloutStats,
+) -> torch.Tensor:
+    """Roll every (origin, path) forward one step at a time.
+
+    Args:
+        history: ``[C, M, T]`` ground-truth series for one simulation, raw units.
+        origins: Forecast origins in this batch.
+        horizons: Number of days to forecast for each origin.
+
+    Returns:
+        ``[W, S, H_max, M, C]`` sampled trajectories. Windows whose horizon is shorter
+        than the batch maximum are zero-padded at the end; the caller scores only
+        ``[:horizons[w]]``, so the padding is never read.
+    """
+    num_channels, num_msoas, num_time_steps = history.shape
+    num_windows = len(origins)
+    num_paths = config.num_samples
+    max_horizon = max(horizons)
+
+    # Timeline per (origin, path): ground truth up to the origin, sampled after it.
+    rollout = history.reshape(1, 1, num_channels, num_msoas, num_time_steps).repeat(
+        num_windows, num_paths, 1, 1, 1
     )
 
-    # 1. Column/index bookkeeping
-    prediction_names = list(dataset_directory.columns_for_prediction)
-    context_names    = list(dataset_directory.columns_for_context)
-    num_prediction   = len(prediction_names)
-    num_msoas        = dataset_directory.num_geographies
+    for step in range(0, max_horizon, config.ar_step_size):
+        active = [w for w in range(num_windows) if step < horizons[w]]
+        if not active:
+            break
 
-    msoa_name_map = dataset_directory.df_geo_metadata["MSOA"].to_numpy()
+        block = min(config.ar_step_size, max_horizon - step)
+        build_started = time.time()
 
-    prediction_indices = [
-        i for i, col in enumerate(dataset_directory.columns_with_data)
-        if col in prediction_names
-    ]
-    context_indices = [
-        i for i, col in enumerate(dataset_directory.columns_with_data)
-        if col in context_names
-    ]
+        inputs: list[dict] = []
+        for w in active:
+            pred_time = origins[w] + step
+            context_start = max(0, pred_time - config.context_size)
 
-    if not prediction_indices or not context_indices:
-        raise ValueError("Missing context or prediction columns in dataset metadata.")
+            past_dow = future_dow = None
+            if covariate_builder.include_day_of_week:
+                past_dow = day_of_week_features(start_dow or 0, np.arange(context_start, pred_time))
+                future_dow = day_of_week_features(start_dow or 0, np.arange(pred_time, pred_time + block))
 
-    # Row positions inside the self-block that correspond to prediction columns
-    pred_pos_in_context = [context_names.index(p) for p in prediction_names if p in context_names]
-
-    pred_type_by_name = dict(
-        zip(dataset_directory.columns_for_prediction, dataset_directory.prediction_distribution_types)
-    )
-    count_channel_positions = [
-        i for i, name in enumerate(prediction_names)
-        if pred_type_by_name.get(name, "lognormal").lower() != "lognormal"
-    ]
-
-    quantile_levels   = [0.025, 0.25, 0.5, 0.75, 0.975]
-    quantile_levels_t = torch.tensor(quantile_levels, device=device)
-
-    # 2. Build spatial neighbour map (once, deterministic union KNN)
-    print(
-        f"[TESTING] Building neighbour map "
-        f"(k={NUM_SPATIAL_NEIGHBORS} per space, unioned feature+geo)..."
-    )
-    neighbor_map = build_neighbor_map(
-        dataset_directory.static_features_tensor,
-        raw_static_features_tensor=dataset_directory.raw_static_features_tensor,
-        n_neighbors=NUM_SPATIAL_NEIGHBORS,
-    )
-    print(f"[TESTING] Neighbour map ready. MSOA-0 neighbours: {neighbor_map[0]}")
-
-    num_time_steps = dataset_directory.num_time_steps
-
-    num_time_steps = dataset_directory.num_time_steps
-
-    # 3. Process one simulation at a time to minimize memory usage
-    for sim_id in dataset_directory.test_sims:
-        sim_idx = dataset_directory.resolve_sim_idx(sim_id)
-        sim_root_folder = os.path.join(output_folder, "TESTING", f"SIM_{sim_id}")
-        
-        num_t_inits = num_time_steps - from_index
-        # A tensor to hold the independent rolling forecast runs concurrently
-        # shape: [num_t_inits, num_variables, num_msoas, num_time_steps]
-        predictions_sim = predictions[:, sim_idx]
-        run_predictions = predictions_sim.unsqueeze(0).repeat(num_t_inits, 1, 1, 1)
-
-        sim_data_tracker = defaultdict(dict)
-        t_init_times = {t: 0.0 for t in range(from_index, num_time_steps)}
-
-        # Loop over the forecast steps (rollout horizon)
-        for step in range(autoregressive_window_size):
-            # Find active initiation days for this step
-            active_t_inits = [t for t in range(from_index, num_time_steps) if t + step < num_time_steps]
-            if not active_t_inits:
-                break
-
-            print(
-                f"[TESTING] SIM_{sim_id} | Rollout step {step + 1}/{autoregressive_window_size} "
-                f"({len(active_t_inits)} active forecast runs)"
-            )
-
-            step_start_time = time.time()
-
-            inputs_list = []
-            meta_list = []
-
-            # Build all inputs for active initiation days and geographies
-            for t_init in active_t_inits:
-                pred_time_idx = t_init + step
-                context_start = pred_time_idx - context_size
-                context_end   = pred_time_idx
-                t_init_idx    = t_init - from_index
-                sim_context   = run_predictions[t_init_idx]
-
-                # Build context tensors with zero-padding if context starts before day 0
-                series_tensors = []
-                for idx in context_indices:
-                    var_data = sim_context[idx]  # [M, T]
-                    if context_start >= 0:
-                        context_tensor = var_data[:, context_start:context_end]
-                    else:
-                        num_padding = abs(context_start)
-                        context_tensor = var_data.new_zeros((num_msoas, context_size))
-                        data_part = var_data[:, 0:context_end]
-                        context_tensor[:, num_padding:] = data_part
-                    series_tensors.append(context_tensor)
-
-                stacked_series = torch.stack(series_tensors, dim=0)
-
-                for m in range(num_msoas):
-                    packed = build_anchor_spatial_input_from_stacked(stacked_series, m, neighbor_map)
-                    inputs_list.append(packed)
-                    meta_list.append((t_init, m))
-
-            # Batch call temporal_model.predict_quantiles
-            all_quantiles = []
-            for b_start in range(0, len(inputs_list), window_batch_size):
-                b_end = min(b_start + window_batch_size, len(inputs_list))
-                batch_inputs = inputs_list[b_start:b_end]
-                with torch.no_grad():
-                    quantiles_list, _ = temporal_model.predict_quantiles(
-                        inputs=batch_inputs,
-                        prediction_length=1,
-                        quantile_levels=quantile_levels,
+            for path in range(num_paths):
+                inputs.extend(
+                    covariate_builder.build_inputs(
+                        rollout[w, path, :, :, context_start:pred_time],
+                        prediction_length=block,
+                        past_dow=past_dow,
+                        future_dow=future_dow,
                     )
-                all_quantiles.extend(quantiles_list)
-
-            # Process outputs and perform feedback
-            step_samples = {t: [None] * num_msoas for t in active_t_inits}
-            step_gt      = {t: [None] * num_msoas for t in active_t_inits}
-
-            for idx, (t_init, m) in enumerate(meta_list):
-                pred_time_idx = t_init + step
-                t_init_idx    = t_init - from_index
-
-                q_tensor = all_quantiles[idx]  # [10*V, 1, Q]
-                self_pred_q = q_tensor[pred_pos_in_context]
-                self_pred_4d = self_pred_q.permute(1, 0, 2).unsqueeze(1)
-
-                sampled = sample_from_quantiles(
-                    quantile_values=self_pred_4d,
-                    quantile_levels=quantile_levels_t,
-                    num_samples=num_samples,
                 )
-                sampled_vals = sampled[:, 0, 0, :]  # [S, V]
+        stats.build_seconds += time.time() - build_started
 
-                if count_channel_positions:
-                    sampled_vals[:, count_channel_positions] = torch.floor(
-                        torch.clamp(sampled_vals[:, count_channel_positions], min=0.0)
-                    )
+        quantiles = _predict_step_quantiles(
+            temporal_model,
+            inputs,
+            prediction_length=block,
+            quantile_levels=quantile_levels,
+            row_batch_size=config.predict_row_batch_size,
+            stats=stats,
+        )
 
-                icdf_feedback = sampled_vals[0]  # [V]
-                for v_i, col_idx in enumerate(prediction_indices):
-                    run_predictions[t_init_idx, col_idx, m, pred_time_idx] = icdf_feedback[v_i]
+        # One inverse-CDF draw per (window, path, msoa, channel, lead).
+        levels = torch.tensor(quantile_levels, dtype=quantiles.dtype)
+        drawn = sample_from_quantiles(quantiles, levels, num_samples=1, generator=generator)[0]
+        drawn = drawn.reshape(len(active), num_paths, num_msoas, num_channels, block)
+        drawn = drawn.permute(0, 1, 3, 2, 4).contiguous()  # [W_active, S, C, M, block]
 
-                gt_vals = ground_truths[prediction_indices, sim_idx, m, pred_time_idx].clone()
-                if count_channel_positions:
-                    gt_vals[count_channel_positions] = torch.floor(
-                        torch.clamp(gt_vals[count_channel_positions], min=0.0)
-                    )
+        if count_channels and config.count_rounding != "none":
+            index = torch.tensor(count_channels, dtype=torch.long)
+            rounder = torch.floor if config.count_rounding == "floor" else torch.round
+            drawn[:, :, index] = rounder(drawn[:, :, index].clamp_min(0.0))
+        drawn = drawn.clamp_min(0.0)
 
-                step_samples[t_init][m] = sampled_vals
-                step_gt[t_init][m]      = gt_vals
-
-            # Stack samples and gt for each active t_init
-            for t_init in active_t_inits:
-                samples_smv = torch.stack(step_samples[t_init], dim=1)  # [S, M, V]
-                gt_mv       = torch.stack(step_gt[t_init],      dim=0)  # [M, V]
-
-                sim_data_tracker[t_init][t_init + step] = {
-                    "samples": samples_smv,
-                    "gt":      gt_mv,
-                }
-
-            # Log step timing distributed to active t_inits
-            step_time = time.time() - step_start_time
-            share = step_time / len(active_t_inits)
-            for t in active_t_inits:
-                t_init_times[t] += share
-
-        # 4. Post-process and serialise feather outputs for all t_init runs
-        print(f"[TESTING] Exporting results for SIM_{sim_id} under {output_folder}...")
-        q_indices = torch.tensor([0.5, 0.025, 0.975, 0.25, 0.75], device=device)
-
-        for t_init in range(from_index, num_time_steps):
-            actual_horizon = min(autoregressive_window_size, num_time_steps - t_init)
-            if actual_horizon <= 0:
+        for position, w in enumerate(active):
+            pred_time = origins[w] + step
+            usable = min(block, horizons[w] - step, num_time_steps - pred_time)
+            if usable <= 0:
                 continue
+            rollout[w, :, :, :, pred_time : pred_time + usable] = drawn[position, :, :, :, :usable]
 
-            prediction_folder = os.path.join(sim_root_folder, "predictions", str(t_init))
-            os.makedirs(prediction_folder, exist_ok=True)
+    # Origins near the end of the series have a shorter horizon than the batch maximum,
+    # so pad to a common length; the padding is never scored.
+    trajectories = torch.zeros(
+        (num_windows, num_paths, max_horizon, num_msoas, num_channels), dtype=rollout.dtype
+    )
+    for w, origin in enumerate(origins):
+        available = min(max_horizon, num_time_steps - origin)
+        window = rollout[w, :, :, :, origin : origin + available]  # [S, C, M, h]
+        trajectories[w, :, :available] = window.permute(0, 3, 2, 1)
+    return trajectories
 
-            pred_tbl_list = []
-            sp_tbl_list = []
-            es_tbl_list = defaultdict(list)
 
-            for step_idx in range(actual_horizon):
-                step_pred_time = t_init + step_idx
-                data = sim_data_tracker[t_init][step_pred_time]
+# ─── Scoring & serialisation ─────────────────────────────────────────────────
 
-                samples_win = data["samples"].unsqueeze(0)  # [1, S, M, V]
-                truth_win   = data["gt"].unsqueeze(0)       # [1, M, V]
 
-                quantiles_q    = torch.quantile(samples_win, q_indices, dim=1)  # [5, 1, M, V]
-                preds_unscaled = quantiles_q[0][0]   # [M, V]
-                preds_lower_95 = quantiles_q[1][0]
-                preds_upper_95 = quantiles_q[2][0]
-                preds_lower_50 = quantiles_q[3][0]
-                preds_upper_50 = quantiles_q[4][0]
+def score_window(samples_win: torch.Tensor, truth_win: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Compute the GENIE scoring-rule set for one forecast window.
 
-                truth_win_flat   = truth_win[0]    # [M, V]
-                samples_win_flat = samples_win[0]  # [S, M, V]
+    Args:
+        samples_win: ``[S, H, M, V]`` predictive sample trajectories.
+        truth_win: ``[H, M, V]`` observed values.
 
-                is_scores_win   = interval_score_torch(truth_win_flat, preds_lower_95, preds_upper_95)
-                crps_scores_win = crps_torch(truth_win_flat, samples_win_flat)
+    Returns:
+        Dict of score tensors: per-node scores are ``[H, M, V]``, multivariate
+        (spatial) scores are ``[H, V]``. Log-scale variants use ``log1p``.
+    """
+    if samples_win.ndim != 4 or truth_win.ndim != 3:
+        raise ValueError("Expected samples [S, H, M, V] and truth [H, M, V]")
+    if samples_win.shape[1:] != truth_win.shape:
+        raise ValueError(
+            f"Sample/truth shape mismatch: {tuple(samples_win.shape)} vs {tuple(truth_win.shape)}"
+        )
 
-                temporal_dim     = truth_win.shape[0]   # 1
-                es_scores_win    = torch.zeros(temporal_dim, num_prediction, device=device)
-                vario_scores_win = torch.zeros(temporal_dim, num_prediction, device=device)
-                for v in range(num_prediction):
-                    target      = truth_win[:, :, v]
-                    prediction  = samples_win[:, :, :, v].permute(1, 0, 2)
-                    es_scores_win[:, v]    = energy_score_torch(target, prediction)
-                    vario_scores_win[:, v] = variogram_torch(target, prediction, p=0.5)
+    device = samples_win.device
+    num_prediction = truth_win.shape[-1]
+    quantile_probs = torch.tensor(REPORT_QUANTILES, device=device, dtype=samples_win.dtype)
 
-                truth_win_log   = torch.log1p(truth_win)
-                samples_win_log = torch.log1p(samples_win)
+    quantiles = torch.quantile(samples_win, quantile_probs, dim=0)  # [5, H, M, V]
+    median, lower_95, upper_95, lower_50, upper_50 = quantiles
 
-                quantiles_log      = torch.quantile(samples_win_log, q_indices, dim=1)
-                preds_lower_95_log = quantiles_log[1][0]
-                preds_upper_95_log = quantiles_log[2][0]
+    interval_95 = interval_score_torch(truth_win, lower_95, upper_95)
+    crps = crps_torch(truth_win, samples_win)
 
-                is_scores_win_log   = interval_score_torch(
-                    torch.log1p(truth_win_flat), preds_lower_95_log, preds_upper_95_log
-                )
-                crps_scores_win_log = crps_torch(
-                    torch.log1p(truth_win_flat), torch.log1p(samples_win_flat)
-                )
+    horizon = truth_win.shape[0]
+    energy = torch.zeros(horizon, num_prediction, device=device)
+    variogram = torch.zeros(horizon, num_prediction, device=device)
+    for v in range(num_prediction):
+        energy[:, v] = energy_score_torch(truth_win[:, :, v], samples_win[:, :, :, v])
+        variogram[:, v] = variogram_torch(truth_win[:, :, v], samples_win[:, :, :, v], p=0.5)
 
-                es_scores_win_log    = torch.zeros(temporal_dim, num_prediction, device=device)
-                vario_scores_win_log = torch.zeros(temporal_dim, num_prediction, device=device)
-                for v in range(num_prediction):
-                    target_log     = truth_win_log[:, :, v]
-                    prediction_log = samples_win_log[:, :, :, v].permute(1, 0, 2)
-                    es_scores_win_log[:, v]    = energy_score_torch(target_log, prediction_log)
-                    vario_scores_win_log[:, v] = variogram_torch(target_log, prediction_log, p=0.5)
+    truth_log = torch.log1p(truth_win)
+    samples_log = torch.log1p(samples_win)
+    interval_95_log = interval_score_torch(truth_log, torch.log1p(lower_95), torch.log1p(upper_95))
+    crps_log = crps_torch(truth_log, samples_log)
 
-                tmv_stack = torch.stack([
-                    preds_unscaled, preds_lower_95, preds_upper_95,
-                    preds_lower_50, preds_upper_50, truth_win_flat,
-                    is_scores_win,  crps_scores_win,
-                    is_scores_win_log, crps_scores_win_log,
-                ], dim=0).cpu().numpy()  # [10, M, V]
+    energy_log = torch.zeros(horizon, num_prediction, device=device)
+    variogram_log = torch.zeros(horizon, num_prediction, device=device)
+    for v in range(num_prediction):
+        energy_log[:, v] = energy_score_torch(truth_log[:, :, v], samples_log[:, :, :, v])
+        variogram_log[:, v] = variogram_torch(truth_log[:, :, v], samples_log[:, :, :, v], p=0.5)
 
-                tv_stack = torch.stack([
-                    es_scores_win, vario_scores_win,
-                    es_scores_win_log, vario_scores_win_log,
-                ], dim=0).cpu().numpy()  # [4, 1, V]
+    return {
+        "median": median,
+        "lower_95": lower_95,
+        "upper_95": upper_95,
+        "lower_50": lower_50,
+        "upper_50": upper_50,
+        "truth": truth_win,
+        "interval_95": interval_95,
+        "crps": crps,
+        "interval_95_log": interval_95_log,
+        "crps_log": crps_log,
+        "energy": energy,
+        "variogram": variogram,
+        "energy_log": energy_log,
+        "variogram_log": variogram_log,
+    }
 
-                # A. predictions.feather slice
-                t_grid          = np.full(num_msoas, step_pred_time, dtype=np.int32)
-                m_grid          = np.arange(num_msoas, dtype=np.int32)
-                is_window_start = np.ones(num_msoas, dtype=np.int8) if step_idx == 0 else np.zeros(num_msoas, dtype=np.int8)
 
-                dynamic_cols = {}
-                for j, name in enumerate(prediction_names):
-                    dynamic_cols[f"{name}_unscaled"]    = tmv_stack[0, :, j]
-                    dynamic_cols[f"{name}_unscaled_gt"] = tmv_stack[5, :, j]
-                    dynamic_cols[f"{name}_lower_95"]    = tmv_stack[1, :, j]
-                    dynamic_cols[f"{name}_upper_95"]    = tmv_stack[2, :, j]
-                    dynamic_cols[f"{name}_lower_50"]    = tmv_stack[3, :, j]
-                    dynamic_cols[f"{name}_upper_50"]    = tmv_stack[4, :, j]
-                    dynamic_cols[f"{name}_IS_95"]       = tmv_stack[6, :, j]
-                    dynamic_cols[f"{name}_CRPS"]        = tmv_stack[7, :, j]
-                    dynamic_cols[f"{name}_IS_95_log"]   = tmv_stack[8, :, j]
-                    dynamic_cols[f"{name}_CRPS_log"]    = tmv_stack[9, :, j]
+def write_window_outputs(
+    prediction_folder: str,
+    origin: int,
+    scores: dict[str, torch.Tensor],
+    samples_win: torch.Tensor,
+    prediction_names: list[str],
+    msoa_name_map: np.ndarray,
+    save_spaghetti: bool,
+) -> None:
+    """Serialise one window to the three GENIE-compatible feather tables."""
+    os.makedirs(prediction_folder, exist_ok=True)
 
-                pred_tbl_list.append(pa.table({
-                    "timestep": t_grid, "msoa": m_grid,
-                    "is_window_start": is_window_start, **dynamic_cols,
-                }))
+    per_node = torch.stack(
+        [
+            scores["median"], scores["lower_95"], scores["upper_95"],
+            scores["lower_50"], scores["upper_50"], scores["truth"],
+            scores["interval_95"], scores["crps"],
+            scores["interval_95_log"], scores["crps_log"],
+        ],
+        dim=0,
+    ).cpu().numpy()  # [10, H, M, V]
+    spatial = torch.stack(
+        [scores["energy"], scores["variogram"], scores["energy_log"], scores["variogram_log"]], dim=0
+    ).cpu().numpy()  # [4, H, V]
 
-                # B. sample_spaghetti.feather slice
-                samples_np = samples_win_flat.cpu().numpy()  # [S, M, V]
-                total_rows = num_samples * num_msoas * num_prediction
+    horizon, num_msoas, num_prediction = per_node.shape[1:]
+    num_samples = samples_win.shape[0]
 
-                s_idx_col = np.repeat(np.arange(num_samples), num_msoas * num_prediction)
-                t_idx_col = np.full(total_rows, step_idx, dtype=np.int32)
-                m_idx_col = np.tile(np.repeat(np.arange(num_msoas), num_prediction), num_samples)
-                v_idx_col = np.tile(np.arange(num_prediction), num_samples * num_msoas)
+    timestep_grid = np.repeat(np.arange(origin, origin + horizon), num_msoas).astype(np.int32)
+    msoa_grid = np.tile(np.arange(num_msoas), horizon).astype(np.int32)
 
-                sp_tbl_list.append(pa.table({
-                    "window_start": np.full(total_rows, t_init, dtype=np.int32),
-                    "timestep":     np.full(total_rows, step_pred_time, dtype=np.int32),
-                    "window_step":  t_idx_col,
-                    "msoa":         m_idx_col,
-                    "msoa_name":    pa.array(msoa_name_map[m_idx_col]),
-                    "sample_idx":   s_idx_col.astype(np.int32),
-                    "burden_type":  pa.array(np.array(prediction_names)[v_idx_col]),
-                    "value":        samples_np.reshape(-1),
-                    "mu_pred":      samples_np.reshape(-1),
-                    "var_pred":     np.zeros(total_rows, dtype=np.float32),
-                }))
+    dynamic_columns = {}
+    for j, name in enumerate(prediction_names):
+        dynamic_columns[f"{name}_unscaled"] = per_node[0, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_unscaled_gt"] = per_node[5, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_lower_95"] = per_node[1, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_upper_95"] = per_node[2, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_lower_50"] = per_node[3, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_upper_50"] = per_node[4, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_IS_95"] = per_node[6, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_CRPS"] = per_node[7, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_IS_95_log"] = per_node[8, :, :, j].reshape(-1)
+        dynamic_columns[f"{name}_CRPS_log"] = per_node[9, :, :, j].reshape(-1)
 
-                # C. spatial_scores.feather slice
-                for v, bname in enumerate(prediction_names):
-                    es_tbl_list[bname].append(pa.table({
-                        "timestep":                np.array([step_pred_time], dtype=np.int32),
-                        "burden":                  pa.array([bname]),
-                        "energy_score":            tv_stack[0, :, v],
-                        "variogram_score_p05":     tv_stack[1, :, v],
-                        "energy_score_log":        tv_stack[2, :, v],
-                        "variogram_score_p05_log": tv_stack[3, :, v],
-                    }))
+    feather.write_feather(
+        pa.table(
+            {
+                "timestep": timestep_grid,
+                "msoa": msoa_grid,
+                "is_window_start": (timestep_grid == origin).astype(np.int8),
+                **dynamic_columns,
+            }
+        ),
+        os.path.join(prediction_folder, "predictions.feather"),
+        compression="lz4",
+    )
 
-            # Write combined tables to files
-            feather.write_feather(
-                pa.concat_tables(pred_tbl_list),
-                os.path.join(prediction_folder, "predictions.feather"),
-                compression="lz4",
-            )
-            feather.write_feather(
-                pa.concat_tables(sp_tbl_list),
-                os.path.join(prediction_folder, "sample_spaghetti.feather"),
-                compression="lz4",
-            )
+    if save_spaghetti:
+        values = samples_win.cpu().numpy().reshape(-1)
+        total = num_samples * horizon * num_msoas * num_prediction
+        sample_idx = np.repeat(np.arange(num_samples), horizon * num_msoas * num_prediction)
+        step_idx = np.tile(np.repeat(np.arange(horizon), num_msoas * num_prediction), num_samples)
+        msoa_idx = np.tile(np.repeat(np.arange(num_msoas), num_prediction), num_samples * horizon)
+        burden_idx = np.tile(np.arange(num_prediction), num_samples * horizon * num_msoas)
 
-            spatial_scores_combined = []
-            for bname in prediction_names:
-                spatial_scores_combined.append(pa.concat_tables(es_tbl_list[bname]))
-            feather.write_feather(
-                pa.concat_tables(spatial_scores_combined),
-                os.path.join(prediction_folder, "spatial_scores.feather"),
-                compression="lz4",
-            )
-
-        # Write overall timing table once at the end of each simulation's run
-        window_times_list = [t_init_times[t] for t in sorted(t_init_times.keys())]
-        timing_table = pa.table({"window_times_seconds": pa.array(window_times_list)})
         feather.write_feather(
-            timing_table,
-            os.path.join(sim_root_folder, "window_times.feather"),
+            pa.table(
+                {
+                    "window_start": np.full(total, origin, dtype=np.int32),
+                    "timestep": (origin + step_idx).astype(np.int32),
+                    "window_step": step_idx.astype(np.int32),
+                    "msoa": msoa_idx.astype(np.int32),
+                    "msoa_name": pa.array(msoa_name_map[msoa_idx]),
+                    "sample_idx": sample_idx.astype(np.int32),
+                    "burden_type": pa.array(np.array(prediction_names)[burden_idx]),
+                    "value": values,
+                    "mu_pred": values,
+                    "var_pred": np.zeros(total, dtype=np.float32),
+                }
+            ),
+            os.path.join(prediction_folder, "sample_spaghetti.feather"),
             compression="lz4",
         )
 
-    print("[TESTING] Finished compiling and tracking predictions.")
-    return predictions
+    timesteps = np.arange(origin, origin + horizon)
+    spatial_tables = [
+        pa.table(
+            {
+                "timestep": timesteps,
+                "burden": pa.array([name] * horizon),
+                "energy_score": spatial[0, :, v],
+                "variogram_score_p05": spatial[1, :, v],
+                "energy_score_log": spatial[2, :, v],
+                "variogram_score_p05_log": spatial[3, :, v],
+            }
+        )
+        for v, name in enumerate(prediction_names)
+    ]
+    feather.write_feather(
+        pa.concat_tables(spatial_tables),
+        os.path.join(prediction_folder, "spatial_scores.feather"),
+        compression="lz4",
+    )
+
+
+# ─── Entry point ─────────────────────────────────────────────────────────────
+
+
+def run_sliding_window_forecasts(
+    temporal_model,
+    dataset_directory,
+    covariate_builder: SpatialCovariateBuilder,
+    config: RolloutConfig,
+    origins: list[int],
+    output_folder: str,
+    sim_ids,
+    quantile_levels: list[float] | None = None,
+) -> RolloutStats:
+    """Run autoregressive forecasts for every requested simulation and origin.
+
+    Args:
+        temporal_model: A :class:`chronos_adapter.ChronosTemporalAdapter`.
+        dataset_directory: The loaded :class:`dataset.DatesetDirectory`.
+        covariate_builder: Defines the spatial covariate layout (must match training).
+        config: Rollout settings.
+        origins: Forecast origins (absolute day indices).
+        output_folder: Run root; ``TESTING/SIM_<id>/...`` is created beneath it.
+        sim_ids: Simulations to evaluate.
+        quantile_levels: Levels requested from Chronos. Defaults to the model's own
+            training grid, which avoids any quantile interpolation before sampling.
+
+    Returns:
+        Counters describing the work done, for the run manifest.
+    """
+    prediction_names = list(dataset_directory.columns_for_prediction)
+    context_names = list(dataset_directory.columns_for_context)
+    if set(context_names) != set(prediction_names):
+        raise ValueError(
+            "Autoregressive rollout requires columns_for_context to match columns_for_prediction "
+            f"(context={context_names}, prediction={prediction_names}); a context channel that is "
+            "not forecast cannot be rolled forward without leaking future ground truth."
+        )
+
+    if quantile_levels is None:
+        quantile_levels = getattr(temporal_model, "native_quantile_levels", None) or FALLBACK_QUANTILE_LEVELS
+    quantile_levels = sorted(float(q) for q in quantile_levels)
+
+    prediction_indices = [dataset_directory.columns_with_data.index(name) for name in prediction_names]
+    distribution_types = dict(zip(prediction_names, dataset_directory.prediction_distribution_types))
+    count_channels = [
+        i for i, name in enumerate(prediction_names)
+        if distribution_types.get(name, "nb").lower() != "lognormal"
+    ]
+
+    num_msoas = dataset_directory.num_geographies
+    num_time_steps = dataset_directory.num_time_steps
+    msoa_name_map = dataset_directory.df_geo_metadata["MSOA"].to_numpy()
+
+    generator = torch.Generator().manual_seed(config.seed)
+    stats = RolloutStats()
+
+    logger.info(
+        "Rollout | %d sims x %d origins | horizon=%d | paths=%d | context=%d | mode=%s | "
+        "rows/anchor=%.1f | quantiles=%d",
+        len(list(sim_ids)),
+        len(origins),
+        config.horizon,
+        config.num_samples,
+        config.context_size,
+        covariate_builder.mode,
+        covariate_builder.total_rows() / max(1, num_msoas),
+        len(quantile_levels),
+    )
+
+    for sim_id in sim_ids:
+        sim_started = time.time()
+        sim_idx = dataset_directory.resolve_sim_idx(sim_id)
+        sim_folder = os.path.join(output_folder, "TESTING", f"SIM_{sim_id}")
+        os.makedirs(sim_folder, exist_ok=True)
+
+        pending = []
+        for origin in origins:
+            folder = os.path.join(sim_folder, "predictions", str(origin))
+            if config.resume and window_is_complete(folder, config.save_spaghetti):
+                stats.windows_skipped += 1
+            else:
+                pending.append(origin)
+
+        if not pending:
+            logger.info("SIM_%s | all %d windows already complete, skipping", sim_id, len(origins))
+            continue
+
+        history = dataset_directory.raw_data_tensor[prediction_indices, sim_idx].to(torch.float32)  # [C, M, T]
+        start_dow = _start_day_of_week(dataset_directory, sim_id) if covariate_builder.include_day_of_week else None
+        window_times: dict[int, float] = {}
+
+        for batch_number, origin_batch in enumerate(_chunks(pending, config.window_batch_size), start=1):
+            horizons = [min(config.horizon, num_time_steps - origin) for origin in origin_batch]
+            batch_started = time.time()
+
+            trajectories = _rollout_origin_batch(
+                temporal_model=temporal_model,
+                covariate_builder=covariate_builder,
+                history=history,
+                origins=origin_batch,
+                horizons=horizons,
+                config=config,
+                quantile_levels=quantile_levels,
+                count_channels=count_channels,
+                start_dow=start_dow,
+                generator=generator,
+                stats=stats,
+            )
+            rollout_seconds = time.time() - batch_started
+
+            score_started = time.time()
+            for w, origin in enumerate(origin_batch):
+                horizon = horizons[w]
+                samples_win = trajectories[w, :, :horizon]  # [S, H, M, V]
+                truth_win = history[:, :, origin : origin + horizon].permute(2, 1, 0).contiguous()
+
+                scores = score_window(samples_win, truth_win)
+                write_window_outputs(
+                    prediction_folder=os.path.join(sim_folder, "predictions", str(origin)),
+                    origin=origin,
+                    scores=scores,
+                    samples_win=samples_win,
+                    prediction_names=prediction_names,
+                    msoa_name_map=msoa_name_map,
+                    save_spaghetti=config.save_spaghetti,
+                )
+                window_times[origin] = rollout_seconds / len(origin_batch)
+                stats.windows_written += 1
+            stats.score_seconds += time.time() - score_started
+
+            elapsed = time.time() - sim_started
+            done = batch_number * config.window_batch_size
+            remaining = max(0, len(pending) - done)
+            logger.info(
+                "SIM_%s | windows %d/%d | %.1fs/window | predict %.1fs build %.1fs | ETA %.1f min",
+                sim_id,
+                min(done, len(pending)),
+                len(pending),
+                rollout_seconds / len(origin_batch),
+                stats.predict_seconds,
+                stats.build_seconds,
+                (elapsed / max(1, min(done, len(pending)))) * remaining / 60.0,
+            )
+
+        existing = {}
+        timing_path = os.path.join(sim_folder, "window_times.feather")
+        if os.path.isfile(timing_path):
+            table = feather.read_table(timing_path).to_pydict()
+            existing = dict(zip(table.get("window_start", []), table.get("window_times_seconds", [])))
+        existing.update(window_times)
+        ordered = sorted(existing.items())
+        feather.write_feather(
+            pa.table(
+                {
+                    "window_start": pa.array([int(k) for k, _ in ordered], type=pa.int32()),
+                    "window_times_seconds": pa.array([float(v) for _, v in ordered]),
+                }
+            ),
+            timing_path,
+            compression="lz4",
+        )
+
+        stats.per_sim_seconds[str(sim_id)] = time.time() - sim_started
+        logger.info("SIM_%s | finished in %.1f min", sim_id, stats.per_sim_seconds[str(sim_id)] / 60.0)
+
+    logger.info("Rollout complete: %s", json.dumps(stats.as_dict())[:400])
+    return stats

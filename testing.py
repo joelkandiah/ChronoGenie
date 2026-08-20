@@ -1,59 +1,108 @@
+#!/usr/bin/env python3
+"""Test-time orchestration: mirrors GENIE's ``testing.test`` entry point.
+
+Chooses which simulations still need work, lays out the output tree so the
+comparison scripts in ``../GENIE/Plotting`` can read it unchanged, and hands the
+rollout itself to :mod:`testing_sliding_window`.
+"""
+
+from __future__ import annotations
+
+import logging
 import os
-import random
 
 import torch
 
-from testing_sliding_window import get_sliding_window_predictions
+from spatial_context import SpatialCovariateBuilder
+from testing_sliding_window import (
+    RolloutConfig,
+    RolloutStats,
+    run_sliding_window_forecasts,
+    window_is_complete,
+)
 
-random.seed(26)
+logger = logging.getLogger(__name__)
 
-def test(temporal_model, local_profile_encoder, interaction_encoder,
-         graph_data,
-         dataset_directory,
-         context_size,
-         autoregressive_window_size=60,
-         device="cuda",
-         output_folder="MODEL_OUTPUT",
-         num_samples = 100,
-         spatial_ablation=False,
-         include_latest_context = False,
-         spatial_encoder_type = "mlp",
-         num_steps = 50,
-         window_batch_size = 16):
 
-    # Set models to evaluation mode
+def select_pending_sims(
+    output_folder: str,
+    sim_ids,
+    origins: list[int],
+    expect_spaghetti: bool,
+) -> list:
+    """Simulations with at least one unfinished window, logged like GENIE's resume."""
+    pending = []
+    for sim_id in sim_ids:
+        sim_folder = os.path.join(output_folder, "TESTING", f"SIM_{sim_id}")
+        complete = sum(
+            window_is_complete(os.path.join(sim_folder, "predictions", str(origin)), expect_spaghetti)
+            for origin in origins
+        )
+        if complete >= len(origins):
+            logger.info("[RESUME] SIM_%s -> COMPLETE (%d/%d windows)", sim_id, complete, len(origins))
+        else:
+            logger.info("[RESUME] SIM_%s -> PENDING (%d/%d windows)", sim_id, complete, len(origins))
+            pending.append(sim_id)
+    return pending
+
+
+def test(
+    temporal_model,
+    dataset_directory,
+    covariate_builder: SpatialCovariateBuilder,
+    config: RolloutConfig,
+    origins: list[int],
+    output_folder: str,
+    sim_ids=None,
+    split_name: str = "TESTING",
+) -> RolloutStats:
+    """Evaluate ``temporal_model`` over the requested simulations and origins.
+
+    Args:
+        temporal_model: A :class:`chronos_adapter.ChronosTemporalAdapter`.
+        dataset_directory: The loaded :class:`dataset.DatesetDirectory`.
+        covariate_builder: Spatial covariate layout; must match the one used to fine-tune.
+        config: Rollout settings.
+        origins: Forecast origins (absolute day indices).
+        output_folder: Variant root; ``TESTING/SIM_<id>/...`` is created beneath it.
+        sim_ids: Simulations to evaluate, defaulting to the dataset's test split.
+        split_name: Which split ``sim_ids`` came from, for logging only.
+
+    Returns:
+        Rollout counters for the run manifest.
+    """
     temporal_model.eval()
-    if interaction_encoder is not None:
-        interaction_encoder.eval()
-
-    if local_profile_encoder is not None:
-        local_profile_encoder.eval()
-
-    del local_profile_encoder, graph_data, device
-
-    output_folder = os.path.join(output_folder, f"ARW_{autoregressive_window_size}")
     os.makedirs(output_folder, exist_ok=True)
 
-    predictions = dataset_directory.raw_data_tensor.clone()
-    ground_truths = dataset_directory.raw_data_tensor
+    all_sims = list(dataset_directory.test_sims if sim_ids is None else sim_ids)
+    pending = (
+        select_pending_sims(output_folder, all_sims, origins, config.save_spaghetti)
+        if config.resume
+        else all_sims
+    )
+
+    logger.info(
+        "[%s] sims total: %d | pending: %d | origins: %d (%s..%s) | horizon: %d",
+        split_name,
+        len(all_sims),
+        len(pending),
+        len(origins),
+        origins[0] if origins else "-",
+        origins[-1] if origins else "-",
+        config.horizon,
+    )
+
+    if not pending:
+        logger.info("[%s] nothing to do; every simulation is already complete.", split_name)
+        return RolloutStats()
 
     with torch.no_grad():
-        get_sliding_window_predictions(
+        return run_sliding_window_forecasts(
             temporal_model=temporal_model,
-            interaction_encoder=interaction_encoder,
-            graph_data=None,
             dataset_directory=dataset_directory,
-            context_size=context_size,
-            autoregressive_window_size=autoregressive_window_size,
-            predictions=predictions,
-            ground_truths=ground_truths,
-            num_samples=num_samples,
-            from_index=getattr(dataset_directory, "min_timestep", 0),
-            include_latest_context=include_latest_context,
-            num_steps=num_steps,
-            windows=list(range(autoregressive_window_size)),
+            covariate_builder=covariate_builder,
+            config=config,
+            origins=origins,
             output_folder=output_folder,
-            spatial_ablation=spatial_ablation,
-            spatial_encoder_type=spatial_encoder_type,
-            window_batch_size=window_batch_size,
+            sim_ids=pending,
         )

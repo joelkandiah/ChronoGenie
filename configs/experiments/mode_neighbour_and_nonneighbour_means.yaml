@@ -1,0 +1,67 @@
+experiment:
+  name: "CHRONOS2_NBR_VS_NONNBR"
+  description: "Each MSOA sees the neighbour mean and the non-neighbour mean separately"
+
+data_source: "configs/data/1K_june.yaml"
+
+output:
+  base_dir: "RESULTS/RESULTS_CHRONOS/{name}_{timestamp}"
+
+columns:
+  prediction: ["daily_hospitalised", "deaths"]
+  # Autoregressive rollout requires context == prediction: a context channel that is
+  # never forecast could only be rolled forward with future ground truth.
+  context: ["daily_hospitalised", "deaths"]
+  continuous_targets: []
+
+execution:
+  mode: "both"          # train | test | both
+  device: "cuda"
+  seed: 26
+
+context:
+  size: 30              # days of history fed to Chronos at each rollout step
+  min_timestep: 0
+
+spatial:
+  covariate_mode: "neighbour_and_nonneighbour_means"
+  knn_k: 9                       # matches GENIE's graph_construction knn_k
+  use_k_nearest_features: true   # k-NN in scaled static-feature space
+  use_k_nearest_distance: true   # k-NN in haversine space; the two are unioned
+  symmetrise: false              # true also adds reciprocal edges (GENIE's undirected GNN graph)
+  max_neighbours: null           # cap the degree (nearest first); null keeps the full 9+9 union
+  include_day_of_week: true      # known-future weekday pair, mirrors GENIE's one-hot
+
+model:
+  chronos_model_id: "amazon/chronos-2"
+  chronos:
+    mode: "lora"
+    learning_rate: 1.0e-5
+    steps: 300
+    batch_size: 512       # Chronos counts ROWS here, not items
+    logging_steps: 10
+    eval_steps: 50
+    count_dequantisation: true
+    max_train_sims: 100
+    max_train_items: 20000
+    max_val_items: 512
+    val_truncations_per_sim: 4
+
+testing:
+  variants: ["baseline", "finetuned"]
+  autoregressive_windows: [60]   # forecast horizon in days, as in GENIE
+  num_samples: 20                # independent autoregressive trajectories
+  origin_stride: 10              # every Nth day is a forecast origin
+  max_origins: null
+  min_context: 7                 # skip origins with less history than this
+  max_test_sims: 10
+  window_batch_size: 4           # forecast origins rolled forward together
+  predict_row_batch_size: 1024   # rows per Chronos forward pass
+  ar_step_size: 1                # days generated per model call
+  count_rounding: "floor"        # inverse of the training-time count jitter; use "round" if that is off
+  save_spaghetti: true
+  resume: true
+
+transfer:
+  scalers_from: null
+  checkpoints_from: null

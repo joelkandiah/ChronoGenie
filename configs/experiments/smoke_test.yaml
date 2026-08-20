@@ -1,0 +1,65 @@
+experiment:
+  name: "CHRONOS2_SMOKE"
+  description: "Tiny end-to-end check: 2 sims, 2 origins, 7-day horizon, 4 paths"
+
+data_source: "configs/data/1K_june.yaml"
+
+output:
+  base_dir: "RESULTS/SMOKE/{name}_{timestamp}"
+
+columns:
+  prediction: ["daily_hospitalised", "deaths"]
+  context: ["daily_hospitalised", "deaths"]
+  continuous_targets: []
+
+execution:
+  mode: "test"
+  device: "cpu"
+  seed: 26
+
+context:
+  size: 14
+  min_timestep: 0
+
+spatial:
+  covariate_mode: "neighbour_and_nonneighbour_means"
+  knn_k: 9
+  use_k_nearest_features: true
+  use_k_nearest_distance: true
+  symmetrise: false
+  max_neighbours: null
+  include_day_of_week: true
+
+model:
+  chronos_model_id: "amazon/chronos-2"
+  chronos:
+    mode: "lora"
+    learning_rate: 1.0e-5
+    steps: 10
+    batch_size: 128
+    logging_steps: 1
+    eval_steps: 5
+    count_dequantisation: true
+    max_train_sims: 2
+    max_train_items: 64
+    max_val_items: 16
+    val_truncations_per_sim: 2
+
+testing:
+  variants: ["baseline"]
+  autoregressive_windows: [7]
+  num_samples: 4
+  origin_stride: 60
+  max_origins: 2
+  min_context: 7
+  max_test_sims: 2
+  window_batch_size: 2
+  predict_row_batch_size: 512
+  ar_step_size: 1
+  count_rounding: "floor"
+  save_spaghetti: true
+  resume: true
+
+transfer:
+  scalers_from: null
+  checkpoints_from: null

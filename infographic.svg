@@ -1,0 +1,368 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 2150 930"
+     width="100%"
+     height="100%"
+     style="background:#ffffff; font-family:Arial,Helvetica,sans-serif;">
+
+<defs>
+  <marker id="arr-denmark" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#C00000"/></marker>
+  <marker id="arr-england" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#0046AD"/></marker>
+  <marker id="arr-flanders" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#E35205"/></marker>
+  <marker id="arr-germany" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#006F3D"/></marker>
+  <marker id="arr-italy" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#D98200"/></marker>
+  <marker id="arr-hungary" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#4A154B"/></marker>
+
+  <g id="briefcase"><rect x="-10" y="-7" width="20" height="14" rx="2"/><rect x="-4" y="-11" width="8" height="4" rx="1"/><line x1="-10" y1="-1" x2="10" y2="-1" stroke="white" stroke-width="1.5"/></g>
+  <g id="university">
+    <polygon points="0,-10 -11,-2 11,-2" stroke-width="2"/>
+    <rect x="-7" y="-2" width="2" height="8" />
+    <rect x="-1" y="-2" width="2" height="8" />
+    <rect x="5" y="-2" width="2" height="8" />
+    <rect x="-11" y="6" width="22" height="2" />
+  </g>
+  <g id="checkmark"><circle cx="0" cy="0" r="9" fill="none" stroke-width="2"/><path d="M-4,0 L-1,3 L5,-3" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></g>
+  <g id="question"><circle cx="0" cy="0" r="9" fill="none" stroke-width="2"/><text x="0" y="4" font-size="13" font-weight="bold" text-anchor="middle">?</text></g>
+</defs>
+
+<rect width="100%" height="100%" fill="#ffffff" />
+
+<g transform="translate(10,0)">
+  <text x="45" y="40" font-size="20" font-weight="bold" fill="#111">EQF</text>
+  <text x="45" y="62" font-size="16" font-weight="bold" fill="#111">Level</text>
+  <line x1="25" y1="490" x2="25" y2="100" stroke="#333" stroke-width="2"/>
+  <path d="M25,93 L21,103 L29,103 Z" fill="#333"/>
+  
+  <text x="45" y="135" font-size="22" font-weight="bold">6</text>
+  <text x="45" y="165" font-size="22" font-weight="bold">5</text>
+  <text x="45" y="260" font-size="22" font-weight="bold">4</text>
+  <text x="45" y="430" font-size="22" font-weight="bold">3</text>
+
+  <rect x="75" y="105" width="130" height="65" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="140" y="135" text-anchor="middle" font-size="13" font-weight="bold" fill="#334155">EQF Level 5–6</text>
+  <text x="140" y="155" text-anchor="middle" font-size="12" fill="#64748B">(Tertiary)</text>
+
+  <rect x="75" y="185" width="130" height="150" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="140" y="255" text-anchor="middle" font-size="13" font-weight="bold" fill="#334155">EQF Level 4</text>
+  <text x="140" y="275" text-anchor="middle" font-size="12" fill="#64748B">(Post-Secondary)</text>
+
+  <rect x="75" y="370" width="130" height="130" rx="8" fill="#F8FAFC" stroke="#E2E8F0"/>
+  <text x="140" y="430" text-anchor="middle" font-size="13" font-weight="bold" fill="#334155">EQF Level 3</text>
+  <text x="140" y="450" text-anchor="middle" font-size="12" fill="#64748B">(Upper Secondary)</text>
+</g>
+
+<g transform="translate(230,0)">
+  <rect x="0" y="20" width="290" height="55" rx="6" fill="#C00000"/>
+  <text x="145" y="42" fill="white" font-size="20" font-weight="bold" text-anchor="middle">DENMARK</text>
+  <text x="145" y="62" fill="white" font-size="13" text-anchor="middle">(Alternating System)</text>
+  
+  <text x="75" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Direct Labor Market</text>
+  <text x="215" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Higher Ed Bridge</text>
+  <use href="#briefcase" transform="translate(75,130)" fill="#C00000"/>
+  <use href="#university" transform="translate(215,130)" fill="#C00000"/>
+  <line x1="75" y1="185" x2="75" y2="148" stroke="#C00000" stroke-width="2" marker-end="url(#arr-denmark)"/>
+  <line x1="215" y1="185" x2="215" y2="148" stroke="#C00000" stroke-width="2" marker-end="url(#arr-denmark)"/>
+
+  <rect x="10" y="185" width="270" height="150" rx="10" fill="#FFF2F2" stroke="#C00000" stroke-width="1.5"/>
+  <line x1="145" y1="195" x2="145" y2="325" stroke="#C00000" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="215" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">EUD/EUX</text>
+  <text x="212.5" y="215" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">EUV</text>
+  <text x="77.5" y="245" font-size="11" text-anchor="middle" fill="#333">(Standard Youth track)</text>
+  <text x="212.5" y="245" font-size="11" text-anchor="middle" fill="#333">(Dedicated Adult track)</text>
+  <text x="77.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 15–20</text>
+  <text x="212.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 25+</text>
+
+  <line x1="145" y1="370" x2="145" y2="345" stroke="#C00000" stroke-width="2" marker-end="url(#arr-denmark)"/>
+
+  <rect x="10" y="370" width="270" height="130" rx="10" fill="white" stroke="#C00000" stroke-width="1.5"/>
+  <line x1="145" y1="380" x2="145" y2="490" stroke="#C00000" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="400" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">FGU / Short EUD</text>
+  <text x="77.5" y="430" font-size="11" text-anchor="middle" fill="#555">Preparatory</text>
+  <text x="77.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 15–17</text>
+
+  <text x="212.5" y="400" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Grundforløb</text>
+  <text x="212.5" y="430" font-size="11" text-anchor="middle" fill="#555">School Foundation</text>
+  <text x="212.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 15–17</text>
+</g>
+
+<g transform="translate(540,0)">
+  <rect x="0" y="20" width="290" height="55" rx="6" fill="#0046AD"/>
+  <text x="145" y="42" fill="white" font-size="20" font-weight="bold" text-anchor="middle">ENGLAND</text>
+  <text x="145" y="62" fill="white" font-size="13" text-anchor="middle">(Centralised System)</text>
+  
+  <text x="75" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Direct Labor Market</text>
+  <text x="215" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Higher Ed Bridge</text>
+  <use href="#briefcase" transform="translate(75,130)" fill="#0046AD"/>
+  <use href="#university" transform="translate(215,130)" fill="#0046AD"/>
+  <line x1="75" y1="185" x2="75" y2="148" stroke="#0046AD" stroke-width="2" marker-end="url(#arr-england)"/>
+  <line x1="215" y1="185" x2="215" y2="148" stroke="#0046AD" stroke-width="2" marker-end="url(#arr-england)"/>
+
+  <rect x="10" y="185" width="270" height="150" rx="10" fill="#F2F7FF" stroke="#0046AD" stroke-width="1.5"/>
+  <line x1="145" y1="195" x2="145" y2="325" stroke="#0046AD" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Advanced</text>
+  <text x="77.5" y="226" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Apprenticeships</text>
+  <text x="77.5" y="246" font-size="11" text-anchor="middle" fill="#333">(Adult / Work-based)</text>
+  <text x="77.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 19–60+</text>
+
+  <text x="212.5" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">T-Levels /</text>
+  <text x="212.5" y="226" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">A-Levels</text>
+  <text x="212.5" y="246" font-size="11" text-anchor="middle" fill="#333">(Tech &amp; Academic)</text>
+  <text x="212.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 16–19</text>
+
+  <line x1="145" y1="370" x2="145" y2="345" stroke="#0046AD" stroke-width="2" marker-end="url(#arr-england)"/>
+
+  <rect x="10" y="370" width="270" height="130" rx="10" fill="white" stroke="#0046AD" stroke-width="1.5"/>
+  <line x1="145" y1="380" x2="145" y2="490" stroke="#0046AD" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="398" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Intermediate</text>
+  <text x="77.5" y="414" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Apprenticeships</text>
+  <text x="77.5" y="434" font-size="11" text-anchor="middle" fill="#555">Level 2 Path</text>
+  <text x="77.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14–16+</text>
+ 
+  <text x="212.5" y="405" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">GCSEs</text>
+  <text x="212.5" y="434" font-size="11" text-anchor="middle" fill="#555">School Base</text>
+  <text x="212.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14–16</text>
+</g>
+
+<g transform="translate(850,0)">
+  <rect x="0" y="20" width="290" height="55" rx="6" fill="#E35205"/>
+  <text x="145" y="42" fill="white" font-size="20" font-weight="bold" text-anchor="middle">FLANDERS</text>
+  <text x="145" y="62" fill="white" font-size="13" text-anchor="middle">(Dual System)</text>
+  
+  <text x="75" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Direct Labor Market</text>
+  <text x="215" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Higher Ed Bridge</text>
+  <use href="#briefcase" transform="translate(75,130)" fill="#E35205"/>
+  <use href="#university" transform="translate(215,130)" fill="#E35205"/>
+  <line x1="75" y1="185" x2="75" y2="148" stroke="#E35205" stroke-width="2" marker-end="url(#arr-flanders)"/>
+  <line x1="215" y1="185" x2="215" y2="148" stroke="#E35205" stroke-width="2" marker-end="url(#arr-flanders)"/>
+
+  <rect x="10" y="185" width="270" height="150" rx="10" fill="#FFF5F0" stroke="#E35205" stroke-width="1.5"/>
+  <line x1="145" y1="195" x2="145" y2="325" stroke="#E35205" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">TSO Tracks &amp;</text>
+  <text x="77.5" y="226" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Standard Dual</text>
+  <text x="77.5" y="246" font-size="11" text-anchor="middle" fill="#333">(Tech Secondary)</text>
+  <text x="77.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 16–19</text>
+
+  <text x="212.5" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Se-n-Se</text>
+  <text x="212.5" y="226" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Specialised</text>
+  <text x="212.5" y="246" font-size="11" text-anchor="middle" fill="#333">(Specialised Study)</text>
+  <text x="212.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 18–24</text>
+
+  <line x1="145" y1="370" x2="145" y2="345" stroke="#E35205" stroke-width="2" marker-end="url(#arr-flanders)"/>
+
+  <rect x="10" y="370" width="270" height="130" rx="10" fill="white" stroke="#E35205" stroke-width="1.5"/>
+  <line x1="145" y1="380" x2="145" y2="490" stroke="#E35205" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="398" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">BSO</text>
+  <text x="77.5" y="414" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">3rd Stage</text>
+  <text x="77.5" y="434" font-size="11" text-anchor="middle" fill="#555">(Initial Dual Tracks)</text>
+  <text x="77.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14–16</text>
+ 
+  <text x="212.5" y="405" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">BSO Secondary</text>
+  <text x="212.5" y="434" font-size="11" text-anchor="middle" fill="#555">(Adult Dynamic Track)</text>
+  <text x="212.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 18-25</text>
+</g>
+
+<g transform="translate(1160,0)">
+  <rect x="0" y="20" width="290" height="55" rx="6" fill="#006F3D"/>
+  <text x="145" y="42" fill="white" font-size="20" font-weight="bold" text-anchor="middle">GERMANY</text>
+  <text x="145" y="62" fill="white" font-size="13" text-anchor="middle">(Dual System)</text>
+  
+  <text x="75" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Direct Labor Market</text>
+  <text x="215" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Higher Ed Bridge</text>
+  <use href="#briefcase" transform="translate(75,130)" fill="#006F3D"/>
+  <use href="#university" transform="translate(215,130)" fill="#006F3D"/>
+  <line x1="75" y1="185" x2="75" y2="148" stroke="#006F3D" stroke-width="2" marker-end="url(#arr-germany)"/>
+  <line x1="215" y1="185" x2="215" y2="148" stroke="#006F3D" stroke-width="2" marker-end="url(#arr-germany)"/>
+
+  <rect x="10" y="185" width="270" height="150" rx="10" fill="#F0FFF5" stroke="#006F3D" stroke-width="1.5"/>
+  <line x1="145" y1="195" x2="145" y2="325" stroke="#006F3D" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Dual VET</text>
+  <text x="77.5" y="226" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Apprenticeship</text>
+  <text x="77.5" y="246" font-size="11" text-anchor="middle" fill="#444">(Flagship Track)</text>
+  <text x="77.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 15/16–19</text>
+
+  <text x="212.5" y="210" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Graduates &amp;</text>
+  <text x="212.5" y="226" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Switchers</text>
+  <text x="212.5" y="246" font-size="11" text-anchor="middle" fill="#444">(Late Entries)</text>
+  <text x="212.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 20–30+</text>
+
+  <line x1="145" y1="370" x2="145" y2="345" stroke="#006F3D" stroke-width="2" marker-end="url(#arr-germany)"/>
+
+  <rect x="10" y="370" width="270" height="130" rx="10" fill="white" stroke="#006F3D" stroke-width="1.5"/>
+  <line x1="145" y1="380" x2="145" y2="490" stroke="#006F3D" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="398" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">DQR</text>
+  <text x="77.5" y="414" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Level 3</text>
+  <text x="77.5" y="434" font-size="11" text-anchor="middle" fill="#555">(Dual Vocational)</text>
+  <text x="77.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 15-17</text>
+ 
+  <text x="212.5" y="398" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Retraining</text>
+  <text x="212.5" y="414" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Programmes</text>
+  <text x="212.5" y="434" font-size="11" text-anchor="middle" fill="#555">(2-Year Vocational)</text>
+  <text x="212.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 17-25</text>
+</g>
+
+<g transform="translate(1470,0)">
+  <rect x="0" y="20" width="290" height="55" rx="6" fill="#D98200"/>
+  <text x="145" y="42" fill="white" font-size="20" font-weight="bold" text-anchor="middle">ITALY</text>
+  <text x="145" y="62" fill="white" font-size="13" text-anchor="middle">(Regional System)</text>
+  
+  <text x="75" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Direct Labor Market</text>
+  <text x="215" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Higher Ed Bridge</text>
+  <use href="#briefcase" transform="translate(75,130)" fill="#D98200"/>
+  <use href="#university" transform="translate(215,130)" fill="#D98200"/>
+  <line x1="75" y1="185" x2="75" y2="148" stroke="#D98200" stroke-width="2" marker-end="url(#arr-italy)"/>
+  <line x1="215" y1="185" x2="215" y2="148" stroke="#D98200" stroke-width="2" marker-end="url(#arr-italy)"/>
+
+  <rect x="10" y="185" width="270" height="150" rx="10" fill="#FFFDF0" stroke="#D98200" stroke-width="1.5"/>
+  <line x1="145" y1="195" x2="145" y2="325" stroke="#D98200" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="205" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">4-Yr IeFP /</text>
+  <text x="77.5" y="221" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Inst. Tecnici</text>
+  <text x="77.5" y="241" font-size="10" text-anchor="middle" fill="#333">(Regional/School)</text>
+  <text x="77.5" y="300" font-size="12" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14–18/19</text>
+
+  <text x="212.5" y="205" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Apprentice</text>
+  <text x="212.5" y="221" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Contracts</text>
+  <text x="212.5" y="241" font-size="10" text-anchor="middle" fill="#333">(VET Integration)</text>
+  <text x="212.5" y="300" font-size="12" font-weight="bold" text-anchor="middle" fill="#000">Ages: 18–29+</text>
+
+  <line x1="145" y1="370" x2="145" y2="345" stroke="#D98200" stroke-width="2" marker-end="url(#arr-italy)"/>
+
+  <rect x="10" y="370" width="270" height="130" rx="10" fill="white" stroke="#D98200" stroke-width="1.5"/>
+  <line x1="145" y1="380" x2="145" y2="490" stroke="#D98200" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="398" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">IeFP</text>
+  <text x="77.5" y="414" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Attestato</text>
+  <text x="77.5" y="434" font-size="11" text-anchor="middle" fill="#555">(3-Year Regional)</text>
+  <text x="77.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14-17</text>
+ 
+  <text x="212.5" y="398" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Adult</text>
+  <text x="212.5" y="414" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Basic</text>
+  <text x="212.5" y="434" font-size="11" text-anchor="middle" fill="#555">(2-Year)</text>
+  <text x="212.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 18+</text>
+</g>
+
+<g transform="translate(1780,0)">
+  <rect x="0" y="20" width="290" height="55" rx="6" fill="#4A154B"/>
+  <text x="145" y="42" fill="white" font-size="20" font-weight="bold" text-anchor="middle">HUNGARY</text>
+  <text x="145" y="62" fill="white" font-size="13" text-anchor="middle">(Centralised System)</text>
+  
+  <text x="75" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Direct Labor Market</text>
+  <text x="215" y="105" font-size="11" font-weight="bold" text-anchor="middle" fill="#444">Higher Ed Bridge</text>
+  <use href="#briefcase" transform="translate(75,130)" fill="#4A154B"/>
+  <use href="#university" transform="translate(215,130)" fill="#4A154B"/>
+  <line x1="75" y1="185" x2="75" y2="148" stroke="#4A154B" stroke-width="2" marker-end="url(#arr-hungary)"/>
+  <line x1="215" y1="185" x2="215" y2="148" stroke="#4A154B" stroke-width="2" marker-end="url(#arr-hungary)"/>
+
+  <rect x="10" y="185" width="270" height="150" rx="10" fill="#FAF5FA" stroke="#4A154B" stroke-width="1.5"/>
+  <line x1="145" y1="195" x2="145" y2="325" stroke="#4A154B" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="215" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Szakképző Iskola</text>
+  <text x="212.5" y="215" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Technikum</text>
+  <text x="77.5" y="245" font-size="10" text-anchor="middle" fill="#444">(3-Year Basic Trade)</text>
+  <text x="212.5" y="245" font-size="10" text-anchor="middle" fill="#444">(5-Year Hybrid)</text>
+  <text x="77.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14–17</text>
+  <text x="212.5" y="310" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14–19</text>
+
+  <line x1="145" y1="370" x2="145" y2="345" stroke="#4A154B" stroke-width="2" marker-end="url(#arr-hungary)"/>
+
+  <rect x="10" y="370" width="270" height="130" rx="10" fill="white" stroke="#4A154B" stroke-width="1.5"/>
+  <line x1="145" y1="380" x2="145" y2="490" stroke="#4A154B" stroke-dasharray="6 4" stroke-width="1"/>
+  <text x="77.5" y="405" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Szakiskola</text>
+  <text x="77.5" y="434" font-size="11" text-anchor="middle" fill="#555">(SEN Learners)</text>
+  <text x="77.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 14-18</text>
+ 
+  <text x="212.5" y="405" font-size="13" font-weight="bold" text-anchor="middle" fill="#111">Adult Adapted</text>
+  <text x="212.5" y="434" font-size="11" text-anchor="middle" fill="#555">(1-2 Year)</text>
+  <text x="212.5" y="475" font-size="13" font-weight="bold" text-anchor="middle" fill="#000">Ages: 16+</text>
+</g>
+
+<g transform="translate(85, 540)">  
+  <rect x="0" y="0" width="1985" height="135" fill="#F8FAFC" stroke="#CBD5E1" stroke-width="1.5" rx="6"/>  
+  <path d="M0,37 H1985" stroke="#CBD5E1" stroke-width="1.5"/>    
+  <path d="M0,75 H1985" stroke="#CBD5E1" stroke-width="1.5"/>  
+  <line x1="145" y1="0" x2="145" y2="135" stroke="#CBD5E1" stroke-width="1.5"/>  
+  <line x1="435" y1="0" x2="435" y2="135" stroke="#CBD5E1" stroke-width="1.5"/>  
+  <line x1="745" y1="0" x2="745" y2="135" stroke="#CBD5E1" stroke-width="1.5"/>  
+  <line x1="1055" y1="0" x2="1055" y2="135" stroke="#CBD5E1" stroke-width="1.5"/>  
+  <line x1="1365" y1="0" x2="1365" y2="135" stroke="#CBD5E1" stroke-width="1.5"/>  
+  <line x1="1675" y1="0" x2="1675" y2="135" stroke="#CBD5E1" stroke-width="1.5"/>
+  
+  <text x="72" y="24" font-size="11" font-weight="bold" fill="#475569" text-anchor="middle">VET SHARE %</text>  
+  
+  <text x="290" y="24" font-size="18" font-weight="bold" fill="#C00000" text-anchor="middle">60.6%</text>  
+  <text x="590" y="24" font-size="18" font-weight="bold" fill="#0046AD" text-anchor="middle">58.5%</text>  
+  <text x="900" y="24" font-size="18" font-weight="bold" fill="#E35205" text-anchor="middle">45.3%</text>  
+  <text x="1210" y="24" font-size="18" font-weight="bold" fill="#006F3D" text-anchor="middle">52.3%</text>  
+  <text x="1520" y="24" font-size="18" font-weight="bold" fill="#D98200" text-anchor="middle">48.3%</text>  
+  <text x="1830" y="24" font-size="18" font-weight="bold" fill="#4A154B" text-anchor="middle">48.8%</text>
+  
+  <text x="72" y="59" font-size="11" font-weight="bold" fill="#475569" text-anchor="middle">HIGHER ED ACCESS</text>
+
+  <g transform="translate(290, 57)">    
+    <use href="#checkmark" transform="translate(-62, -4)" stroke="#008000" fill="#008000"/>    
+    <text x="10" y="0" font-size="12" font-weight="bold" fill="#111" text-anchor="middle">Yes (via EUX route)</text>  
+  </g>    
+  <g transform="translate(590, 57)">    
+    <use href="#checkmark" transform="translate(-58, -4)" stroke="#008000" fill="#008000"/>    
+    <text x="10" y="0" font-size="12" font-weight="bold" fill="#111" text-anchor="middle">Yes (via T-Levels)</text>  
+  </g>
+  <g transform="translate(900, 57)">    
+    <use href="#checkmark" transform="translate(-75, -4)" stroke="#008000" fill="#008000"/>    
+    <text x="10" y="0" font-size="12" font-weight="bold" fill="#111" text-anchor="middle">Yes (Specification base)</text>  
+  </g>
+  <g transform="translate(1210, 57)">    
+    <use href="#checkmark" transform="translate(-65, -4)" stroke="#008000" fill="#008000"/>    
+    <text x="10" y="0" font-size="12" font-weight="bold" fill="#111" text-anchor="middle">Yes (via Fachabitur)</text>  
+  </g>
+  <g transform="translate(1520, 57)">    
+    <use href="#checkmark" transform="translate(-65, -4)" stroke="#008000" fill="#008000"/>    
+    <text x="10" y="0" font-size="12" font-weight="bold" fill="#111" text-anchor="middle">Yes (via Inst. Tecnici)</text>  
+  </g>
+  <g transform="translate(1830, 57)">    
+    <use href="#question" transform="translate(-88, -4)" stroke="#D92727" fill="#D92727"/>    
+    <text x="10" y="0" font-size="12" font-weight="bold" fill="#111" text-anchor="middle">Conditional (Technikum track)</text>  
+  </g>
+
+  <text x="72" y="100" font-size="11" font-weight="bold" fill="#475569" text-anchor="middle">WORKPLACE</text>
+  <text x="72" y="114" font-size="11" font-weight="bold" fill="#475569" text-anchor="middle">COMPONENT</text>
+
+  <text x="290" y="107" font-size="12" font-weight="bold" fill="#C00000" text-anchor="middle">&gt;60% (EUD)</text>
+
+  <text x="590" y="98" font-size="12" font-weight="bold" fill="#0046AD" text-anchor="middle">80% (Apprenticeships)</text>
+  <text x="590" y="116" font-size="12" font-weight="bold" fill="#0046AD" text-anchor="middle">20% (T-Levels)</text>
+
+  <text x="900" y="98" font-size="12" font-weight="bold" fill="#E35205" text-anchor="middle">60% (3-day)</text>
+  <text x="900" y="116" font-size="12" font-weight="bold" fill="#E35205" text-anchor="middle">80% (4-day)</text>
+
+  <text x="1210" y="107" font-size="12" font-weight="bold" fill="#006F3D" text-anchor="middle">70%–75% (Dual System)</text>
+
+  <text x="1520" y="94" font-size="12" font-weight="bold" fill="#D98200" text-anchor="middle">~40% (IeFP)</text>
+  <text x="1520" y="107" font-size="12" font-weight="bold" fill="#D98200" text-anchor="middle">&lt;50% (State Track)</text>
+  <text x="1520" y="120" font-size="12" font-weight="bold" fill="#D98200" text-anchor="middle">50% (Apprenticeships)</text>
+
+  <text x="1830" y="98" font-size="12" font-weight="bold" fill="#4A154B" text-anchor="middle">70%–80% (Szakképző Iskola)</text>
+  <text x="1830" y="116" font-size="12" font-weight="bold" fill="#4A154B" text-anchor="middle">~60% (Technikum)</text>
+</g>
+
+<g transform="translate(400, 710)">
+  <text x="0" y="20" font-size="13" font-weight="bold" fill="#0046AD">EQF LEVEL REFERENCE</text>
+  <text x="0" y="50" font-size="12" font-weight="bold" fill="#0046AD">EQF 3</text>
+  <text x="50" y="50" font-size="12" fill="#333">Upper secondary education (typically ages 15–19)</text>
+  <text x="0" y="85" font-size="12" font-weight="bold" fill="#0046AD">EQF 4</text>
+  <text x="50" y="85" font-size="12" fill="#333">Post-secondary non-tertiary education (levels 3–4)</text>
+  <text x="0" y="120" font-size="12" font-weight="bold" fill="#0046AD">EQF 5–6</text>
+  <text x="50" y="120" font-size="12" fill="#333">Tertiary education (short-cycle tertiary and bachelor level)</text>
+
+  <g transform="translate(825,0)">
+    <text x="0" y="20" font-size="13" font-weight="bold" fill="#0046AD">NOTES &amp; CORE DATA SOURCES</text>
+    <text x="0" y="45" font-size="11" fill="#444">NB: This is a stylized comparative framework; details match internal documentation.</text>
+    <text x="0" y="65" font-size="11" fill="#444">Comprehensive references can be pulled directly via Cedefop structures.</text>
+    <text x="0" y="95" font-size="11" font-weight="bold" fill="#0046AD">Sources: Cedefop (EU), Eurostat Datasets (2020–2024)</text>
+  </g>
+</g>
+
+<g transform="translate(0, 860)">
+  <rect x="0" y="20" width="2150" height="45" fill="#002060"/>
+  <circle cx="40" cy="42" r="10" fill="white"/>
+  <text x="40" y="46" font-size="13" font-weight="bold" fill="#002060" text-anchor="middle">i</text>
+  <text x="65" y="46" font-size="13" font-weight="bold" fill="#FFFFFF">WHY IT MATTERS:</text>
+  <text x="185" y="46" font-size="13" fill="#FFFFFF">Dual VET pathways deliver highly industry-relevant skills, facilitating smoother school-to-work structural transitions for modern multi-state technical execution.</text>
+</g>
+
+</svg>

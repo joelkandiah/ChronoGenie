@@ -1,242 +1,184 @@
+#!/usr/bin/env python3
+"""Thin wrapper around ``Chronos2Pipeline`` plus the sampling utilities it needs.
+
+The adapter keeps three responsibilities:
+
+* resolving a model source (base checkpoint or a fine-tuned LoRA directory),
+* fine-tuning while capturing the trainer's log history for plotting,
+* inverse-CDF sampling from the quantile forecasts Chronos-2 returns.
+
+Chronos-2 emits *marginal* quantiles per row and per horizon step; it does not
+emit joint sample paths. Trajectories are therefore produced by the caller
+(:mod:`testing_sliding_window`) via a 1-step autoregressive rollout in which each
+path draws its own inverse-CDF realisation and feeds it back into its own
+context -- the same scheme the GENIE models use.
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import logging
 import os
-from typing import Iterable
+from dataclasses import dataclass, field
+from pathlib import Path
 
-import numpy as np
 import torch
-from sklearn.neighbors import NearestNeighbors
 
 from chronos.chronos2 import Chronos2Pipeline
 
-# ─── Spatial neighbor configuration ──────────────────────────────────────────
-NUM_SPATIAL_NEIGHBORS = 9
+logger = logging.getLogger(__name__)
+
+FINETUNED_CKPT_NAME = "finetuned-ckpt"
 
 
-def build_neighbor_map(
-    static_features_tensor: torch.Tensor,
-    raw_static_features_tensor: torch.Tensor | None = None,
-    n_neighbors: int = NUM_SPATIAL_NEIGHBORS,
-) -> dict[int, list[int]]:
-    """Build a deterministic neighbor lookup from static feature and geo spaces.
-
-    The original graph-building path combined two independent 9-NN sets: one in
-    the full static feature space and one in geographic coordinate space. This
-    helper reproduces that union deterministically and preserves the order in
-    which neighbours are discovered.
-
-    Args:
-        static_features_tensor: Float tensor of shape ``[M, F]`` used for the
-            feature-space KNN.
-        raw_static_features_tensor: Optional unscaled static features tensor. When
-            provided, the first two columns are used for the geographic KNN.
-        n_neighbors: Exact number of neighbors to return per node (default 9).
-
-    Returns:
-        dict mapping each MSOA node id (``int``, 0-indexed) to a list of neighbor
-        node ids in deterministic proximity order. Self-loops are excluded.
-    """
-    if static_features_tensor.ndim != 2:
-        raise ValueError(f"Expected static_features_tensor with shape [M, F], got {tuple(static_features_tensor.shape)}")
-
-    def _kneighbors(feature_tensor: torch.Tensor, metric: str) -> list[list[int]]:
-        feature_array = feature_tensor.detach().cpu().numpy()
-        if metric == "haversine":
-            if feature_array.shape[1] < 2:
-                raise ValueError("Geographic neighbour search requires at least two columns")
-            feature_array = np.radians(feature_array[:, :2])
-        k = min(n_neighbors + 1, feature_array.shape[0])
-        nbrs = NearestNeighbors(n_neighbors=k, metric=metric).fit(feature_array)
-        _, indices = nbrs.kneighbors(feature_array)
-        return [[int(j) for j in row if int(j) != i][:n_neighbors] for i, row in enumerate(indices)]
-
-    feature_candidates = _kneighbors(static_features_tensor, metric="euclidean")
-    geo_source = raw_static_features_tensor if raw_static_features_tensor is not None else static_features_tensor[:, :2]
-    geo_candidates = _kneighbors(geo_source, metric="haversine" if raw_static_features_tensor is not None else "euclidean")
-
-    neighbor_map: dict[int, list[int]] = {}
-    for i in range(static_features_tensor.shape[0]):
-        neighbors: list[int] = []
-        seen = {i}
-        for candidate in feature_candidates[i] + geo_candidates[i]:
-            if candidate not in seen:
-                neighbors.append(candidate)
-                seen.add(candidate)
-        neighbor_map[i] = neighbors
-
-    return neighbor_map
-
-
-def build_anchor_spatial_input(
-    series_tensors: Iterable[torch.Tensor],
-    anchor_id: int,
-    neighbor_map: dict[int, list[int]],
-) -> torch.Tensor:
-    """Pack one MSOA anchor and its neighbours into a Chronos [V, T] tensor."""
-    series_list = [tensor for tensor in series_tensors]
-    if len(series_list) == 0:
-        raise ValueError("series_tensors is empty")
-
-    history_length = series_list[0].shape[-1]
-    if any(tensor.ndim != 2 for tensor in series_list):
-        raise ValueError("Each series tensor must have shape [M, T]")
-    if any(tensor.shape[-1] != history_length for tensor in series_list):
-        raise ValueError("All series tensors must share the same history length")
-
-    node_ids = [anchor_id] + list(neighbor_map[anchor_id])
-    rows = [series[node_id] for node_id in node_ids for series in series_list]
-    return torch.stack(rows, dim=0)
-
-
-def build_anchor_spatial_input_from_stacked(
-    stacked_series: torch.Tensor,
-    anchor_id: int,
-    neighbor_map: dict[int, list[int]],
-) -> torch.Tensor:
-    """Pack one MSOA anchor from a stacked [C, M, T] context tensor."""
-    if stacked_series.ndim != 3:
-        raise ValueError(f"Expected stacked_series with shape [C, M, T], got {tuple(stacked_series.shape)}")
-
-    node_ids = [anchor_id] + list(neighbor_map[anchor_id])
-    packed = stacked_series[:, node_ids, :].permute(1, 0, 2).contiguous()
-    return packed.reshape(-1, stacked_series.shape[-1])
-
-
-def build_anchor_spatial_inputs(
-    series_tensors: Iterable[torch.Tensor],
-    anchor_ids: Iterable[int],
-    neighbor_map: dict[int, list[int]],
-) -> list[torch.Tensor]:
-    """Build one Chronos input tensor per MSOA anchor."""
-    return [build_anchor_spatial_input(series_tensors, anchor_id, neighbor_map) for anchor_id in anchor_ids]
-
-
-def _repeat_static_rows(static_features: torch.Tensor, history_length: int) -> torch.Tensor:
-    """Repeat per-node static features across the time axis and flatten to rows."""
-    if static_features.ndim != 2:
-        raise ValueError(f"Expected static_features with shape [M, F], got {tuple(static_features.shape)}")
-    repeated = static_features.unsqueeze(-1).expand(-1, -1, history_length)
-    return repeated.reshape(-1, history_length)
-
-
-def pack_chronos_input(
-    series_tensors: Iterable[torch.Tensor],
-    static_features: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Pack direct Chronos inputs as a multivariate tensor [V, T]."""
-    series_list = [tensor for tensor in series_tensors]
-    if len(series_list) == 0:
-        raise ValueError("series_tensors is empty")
-
-    history_length = series_list[0].shape[-1]
-    if any(tensor.ndim != 2 for tensor in series_list):
-        raise ValueError("Each series tensor must have shape [M, T]")
-    if any(tensor.shape[-1] != history_length for tensor in series_list):
-        raise ValueError("All series tensors must share the same history length")
-
-    stacked = torch.cat(series_list, dim=0)
-    if static_features is None:
-        return stacked
-
-    static_rows = _repeat_static_rows(static_features, history_length)
-    return torch.cat([stacked, static_rows], dim=0)
-
-
-def add_count_smoothing_noise(
-    packed_input: torch.Tensor,
-    count_row_count: int,
-    low: float = 0.0,
-    high: float = 1.0,
-) -> torch.Tensor:
-    """Add uniform noise to the leading count rows while leaving static context untouched."""
-    if packed_input.ndim != 2:
-        raise ValueError(f"Expected packed_input with shape [R, T], got {tuple(packed_input.shape)}")
-    if count_row_count < 0 or count_row_count > packed_input.shape[0]:
-        raise ValueError("count_row_count is out of range")
-
-    noisy = packed_input.clone()
-    if count_row_count > 0:
-        noise = torch.empty_like(noisy[:count_row_count]).uniform_(low, high)
-        noisy[:count_row_count] = torch.floor(noisy[:count_row_count] + noise).clamp_min(0.0)
-    return noisy
-
-
-def unpack_prediction_blocks(
-    quantile_tensor: torch.Tensor,
-    context_names: list[str],
-    prediction_names: list[str],
-    num_nodes: int,
-) -> torch.Tensor:
-    """Extract prediction-variable blocks from a Chronos tensor output.
-
-    Returns a tensor with shape [T, M, V, Q].
-    """
-    if quantile_tensor.ndim != 3:
-        raise ValueError(f"Expected Chronos output with shape [V, T, Q], got {tuple(quantile_tensor.shape)}")
-
-    blocks = []
-    for name in prediction_names:
-        if name not in context_names:
-            raise ValueError(f"Prediction column '{name}' must be present in context columns for direct Chronos input")
-        ctx_idx = context_names.index(name)
-        start = ctx_idx * num_nodes
-        end = start + num_nodes
-        blocks.append(quantile_tensor[start:end])
-
-    return torch.stack(blocks, dim=0).permute(2, 1, 0, 3).contiguous()
+# ─── Sampling ────────────────────────────────────────────────────────────────
 
 
 def sample_from_quantiles(
     quantile_values: torch.Tensor,
     quantile_levels: torch.Tensor,
     num_samples: int,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    """Sample trajectories from monotone quantile forecasts using inverse-CDF interpolation."""
-    if quantile_values.ndim != 4:
-        raise ValueError(f"Expected quantile_values with shape [T, M, V, Q], got {tuple(quantile_values.shape)}")
+    """Draw samples from monotone quantile forecasts by inverse-CDF interpolation.
 
+    Args:
+        quantile_values: ``[..., Q]`` quantile forecasts, increasing along the last axis.
+        quantile_levels: ``[Q]`` the levels the values correspond to, strictly increasing.
+        num_samples: Number of independent draws per leading position.
+        generator: Optional RNG for reproducible draws.
+
+    Returns:
+        ``[num_samples, ...]`` samples. Draws with ``u`` outside
+        ``[min(levels), max(levels)]`` are linearly extrapolated from the outermost
+        pair of quantiles rather than clipped, so the tails keep some spread.
+    """
+    if quantile_values.ndim < 1:
+        raise ValueError("quantile_values must have at least one dimension")
     if quantile_levels.ndim != 1:
         raise ValueError("quantile_levels must be 1-D")
-
-    if quantile_levels.numel() == 1:
-        return quantile_values[..., 0].unsqueeze(0).expand(num_samples, -1, -1, -1).contiguous()
+    if quantile_values.shape[-1] != quantile_levels.numel():
+        raise ValueError(
+            f"quantile_values last dim ({quantile_values.shape[-1]}) must match "
+            f"quantile_levels ({quantile_levels.numel()})"
+        )
 
     device = quantile_values.device
-    q_levels = quantile_levels.to(device=device, dtype=quantile_values.dtype)
-    q_count = q_levels.numel()
-    u = torch.rand((num_samples,) + quantile_values.shape[:-1], device=device, dtype=quantile_values.dtype)
-    idx = torch.searchsorted(q_levels, u, right=True).clamp(1, q_count - 1)
-    left = idx - 1
-    right = idx
+    dtype = quantile_values.dtype
+    levels = quantile_levels.to(device=device, dtype=dtype)
+    num_levels = levels.numel()
 
-    q_left = q_levels[left]
-    q_right = q_levels[right]
-    expanded = quantile_values.unsqueeze(0).expand(num_samples, -1, -1, -1, -1)
-    v_left = torch.gather(expanded, -1, left.unsqueeze(-1)).squeeze(-1)
-    v_right = torch.gather(expanded, -1, right.unsqueeze(-1)).squeeze(-1)
+    if num_levels == 1:
+        return quantile_values[..., 0].unsqueeze(0).expand(num_samples, *quantile_values.shape[:-1]).contiguous()
 
-    denom = torch.clamp(q_right - q_left, min=torch.finfo(quantile_values.dtype).eps)
-    weight = (u - q_left) / denom
-    return v_left + weight * (v_right - v_left)
+    u = torch.rand(
+        (num_samples, *quantile_values.shape[:-1]), device=device, dtype=dtype, generator=generator
+    )
+    right = torch.searchsorted(levels, u.contiguous(), right=True).clamp(1, num_levels - 1)
+    left = right - 1
+
+    expanded = quantile_values.unsqueeze(0).expand(num_samples, *quantile_values.shape)
+    value_left = torch.gather(expanded, -1, left.unsqueeze(-1)).squeeze(-1)
+    value_right = torch.gather(expanded, -1, right.unsqueeze(-1)).squeeze(-1)
+
+    level_left = levels[left]
+    level_right = levels[right]
+    denominator = torch.clamp(level_right - level_left, min=torch.finfo(dtype).eps)
+    weight = (u - level_left) / denominator
+    return value_left + weight * (value_right - value_left)
+
+
+def dequantise_counts(
+    values: torch.Tensor,
+    count_row_mask: torch.Tensor,
+    low: float = 0.0,
+    high: float = 1.0,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Add uniform jitter to integer count rows: ``y -> floor(y + U(low, high))``.
+
+    Discrete counts are a poor fit for a continuous quantile loss. Jittering them
+    during fine-tuning lets the model learn a continuous density whose floor
+    recovers the count, which is why sampled counts are floored at test time.
+
+    Args:
+        values: ``[R, T]`` rows of a Chronos context.
+        count_row_mask: ``[R]`` bool, True for rows holding counts.
+        low: Lower bound of the jitter.
+        high: Upper bound of the jitter.
+        generator: Optional RNG for reproducible jitter.
+
+    Returns:
+        A copy of ``values`` with the masked rows jittered and clamped at zero.
+    """
+    if values.ndim != 2:
+        raise ValueError(f"Expected values with shape [R, T], got {tuple(values.shape)}")
+    if count_row_mask.shape[0] != values.shape[0]:
+        raise ValueError("count_row_mask must have one entry per row of values")
+
+    noisy = values.clone()
+    if bool(count_row_mask.any()):
+        rows = noisy[count_row_mask]
+        jitter = torch.empty(rows.shape, dtype=rows.dtype, device=rows.device)
+        jitter.uniform_(low, high, generator=generator)
+        noisy[count_row_mask] = torch.floor(rows + jitter).clamp_min(0.0)
+    return noisy
+
+
+# ─── Model source resolution ─────────────────────────────────────────────────
+
+
+def resolve_model_source(base_model_id: str, checkpoint_dir: str | os.PathLike | None) -> str:
+    """Return the path/id Chronos should load, preferring a fine-tuned checkpoint.
+
+    ``Chronos2Pipeline.fit`` writes its adapter to ``<output_dir>/finetuned-ckpt``,
+    so both that directory and its parent are accepted.
+    """
+    if checkpoint_dir is None:
+        return base_model_id
+
+    candidate = Path(checkpoint_dir)
+    for path in (candidate / FINETUNED_CKPT_NAME, candidate):
+        if (path / "adapter_config.json").is_file() or (path / "config.json").is_file():
+            return str(path)
+    return base_model_id
+
+
+def find_finetuned_checkpoint(output_dir: str | os.PathLike) -> str | None:
+    """Path of the fine-tuned checkpoint under ``output_dir``, or None if absent."""
+    resolved = resolve_model_source("__missing__", output_dir)
+    return None if resolved == "__missing__" else resolved
+
+
+# ─── Adapter ─────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class ChronosTemporalAdapter:
+    """Chronos-2 pipeline wrapper with the interface the runner and tester expect."""
+
     model_id: str = "amazon/chronos-2"
     device: str = "cuda"
     cache_dir: str | None = None
+    run_logs: list[dict] = field(default_factory=list, init=False)
 
     def __post_init__(self) -> None:
-        cache_dir = self.cache_dir or os.environ.get("CHRONOS_CACHE_DIR") or os.environ.get("HUGGINGFACE_HUB_CACHE") or os.environ.get("HF_HOME") or os.path.join(
-            os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
-            "huggingface",
+        cache_dir = (
+            self.cache_dir
+            or os.environ.get("CHRONOS_CACHE_DIR")
+            or os.environ.get("HUGGINGFACE_HUB_CACHE")
+            or os.environ.get("HF_HOME")
+            or os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "huggingface")
         )
         os.makedirs(cache_dir, exist_ok=True)
         self.cache_dir = cache_dir
+
+        logger.info("Loading Chronos-2 from %s (cache_dir=%s)", self.model_id, cache_dir)
         self.pipeline = Chronos2Pipeline.from_pretrained(self.model_id, cache_dir=cache_dir)
         self.is_chronos_model = True
         self.is_generative_model = False
+
+    # -- lifecycle ----------------------------------------------------------
 
     def eval(self) -> "ChronosTemporalAdapter":
         self.pipeline.model.eval()
@@ -247,48 +189,51 @@ class ChronosTemporalAdapter:
         self.pipeline.model.to(device)
         return self
 
-    def fit(self, *args, **kwargs):
-        self.pipeline = self.pipeline.fit(*args, **kwargs)
+    @property
+    def native_quantile_levels(self) -> list[float]:
+        """The quantile grid the model was trained on; sampling on it avoids interpolation."""
+        return list(self.pipeline.quantiles)
+
+    def num_parameters(self) -> int:
+        return sum(p.numel() for p in self.pipeline.model.parameters())
+
+    # -- fine-tuning --------------------------------------------------------
+
+    def fine_tune(self, *args, **kwargs) -> "ChronosTemporalAdapter":
+        """Fine-tune the pipeline, capturing the HF trainer log history."""
+        from transformers.trainer_callback import TrainerCallback
+
+        captured: list[dict] = []
+
+        class _LogCapture(TrainerCallback):
+            def on_log(self, args, state, control, logs=None, **_):
+                if logs:
+                    entry = dict(logs)
+                    entry.setdefault("step", state.global_step)
+                    entry.setdefault("epoch", state.epoch)
+                    captured.append(entry)
+
+        callbacks = list(kwargs.pop("callbacks", []) or [])
+        callbacks.append(_LogCapture())
+
+        self.pipeline = self.pipeline.fit(*args, callbacks=callbacks, **kwargs)
+        self.run_logs = captured
+        logger.info("Fine-tuning finished; captured %d trainer log entries", len(captured))
         return self
 
-    def fine_tune(self, *args, **kwargs):
-        count_row_count = kwargs.pop("count_row_count", None)
-        count_noise_low = kwargs.pop("count_noise_low", 0.0)
-        count_noise_high = kwargs.pop("count_noise_high", 1.0)
+    def save_training_logs(self, output_dir: str | os.PathLike) -> str | None:
+        """Write the captured trainer logs to ``training_log.jsonl``."""
+        if not self.run_logs:
+            logger.warning("No trainer logs captured; nothing to save")
+            return None
+        path = os.path.join(str(output_dir), "training_log.jsonl")
+        with open(path, "w") as handle:
+            for entry in self.run_logs:
+                handle.write(json.dumps(entry) + "\n")
+        logger.info("Wrote trainer logs to %s", path)
+        return path
 
-        if count_row_count is not None and "inputs" in kwargs:
-            inputs = kwargs["inputs"]
-            if isinstance(inputs, list):
-                if isinstance(count_row_count, (list, tuple)):
-                    if len(count_row_count) != len(inputs):
-                        raise ValueError("count_row_count must match the number of training inputs")
-                    kwargs["inputs"] = [
-                        add_count_smoothing_noise(tensor, row_count, count_noise_low, count_noise_high)
-                        if isinstance(tensor, torch.Tensor)
-                        else tensor
-                        for tensor, row_count in zip(inputs, count_row_count)
-                    ]
-                else:
-                    kwargs["inputs"] = [
-                        add_count_smoothing_noise(tensor, count_row_count, count_noise_low, count_noise_high)
-                        if isinstance(tensor, torch.Tensor)
-                        else tensor
-                        for tensor in inputs
-                    ]
-
-        self.pipeline = self.pipeline.fit(*args, **kwargs)
-        # Save logs to an attribute instead of returning them!
-        self.run_logs = None
-        if hasattr(self.pipeline, "trainer") and hasattr(self.pipeline.trainer, "state"):
-            self.run_logs = self.pipeline.trainer.state.log_history
-            if self.run_logs is not None:
-                print(f"[ChronosTemporalAdapter] Saved {len(self.run_logs)} log entries")
-            else:
-                print("[ChronosTemporalAdapter] Warning: No log history available")
-        else:
-            print("[ChronosTemporalAdapter] Warning: trainer or state not found")
-            
-        return self
+    # -- inference ----------------------------------------------------------
 
     def predict_quantiles(self, *args, **kwargs):
         return self.pipeline.predict_quantiles(*args, **kwargs)
